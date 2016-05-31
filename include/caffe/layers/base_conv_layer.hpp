@@ -197,33 +197,23 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   Blob<int> col_buf_mask_;
   vector<int> left_columns_;//the number of left columns of weight matrix for each group
   Blob<Dtype> squeezed_weight_buffer_;
-//    Dtype *weight_aligned_, *weight_aligned2_;
-  Dtype *weight_interleaved_; /**< JSP: interleave 8 output channels to vectorize over output channels */
+  Dtype *weight_interleaved_; /**< JSP: interleave 8 output channels to vectorize over output channels for direct dense convolution of conv1 */
   Dtype *input_padded_;
   Dtype *output_scratch_;
-//  Dtype *output_colmajor_scratch_;
-  Dtype *input_interleaved_;
-//  Dtype *output_interleaved_;
   Dtype *input_aligned_;
   //Blob<Dtype> connectivity_mask_;//0.0 means the connection is off, 1.0 means ON
 
+  /** weight sparse matrix */
   vector<int *> weight_rowptr_;
   vector<int *> weight_colidx_;
   vector<Dtype *> weight_values_;
 
+  /** column blocked weight sparse matrix used for sconv345 */
   vector<int *> weight_rowptr_blocked_;
   vector<int *> weight_colidx_blocked_;
   vector<Dtype *> weight_values_blocked_;
 
-//  vector<int *> weight_blockptr_colmajor_;
-//  vector<int *> weight_kidx_colmajor_;
-//  vector<Dtype *> weight_values_colmajor_;
-//  Dtype *input_scratch_;
-
-//  vector<int *> weight_rowptr_interleaved_;
-//  vector<int *> weight_colidx_interleaved_;
-//  vector<Dtype *> weight_values_interleaved_;
-
+  /** column blocked weight sparse matrix used for sconv345_split that involves fewer unaligned loads */
   vector<int *> weight_rowptr_split_;
   vector<int *> weight_colidx_split_;
   vector<Dtype *> weight_values_split_;

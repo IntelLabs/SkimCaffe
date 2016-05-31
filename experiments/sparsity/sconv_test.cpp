@@ -14,7 +14,9 @@
 #include <cmath>
 
 #include "../../include/caffe/util/conv.hpp"
+#include "../../include/caffe/util/spgemm.hpp"
 #include "SpMP/CSR.hpp"
+#include <mkl.h>
 
 #ifdef SEP
 #include "sampling.h"
@@ -32,7 +34,6 @@
 #include "../../include/caffe/util/sde.h"
 #endif
 
-using namespace SpMP;
 using namespace std;
 
 synk::Barrier *barriers[256];
@@ -95,7 +96,7 @@ int main(int argc, const char *argv[])
 //  const float *input = new float[NBATCH * NIN * WIDTH * WIDTH];
 //  float *output = new float[NBATCH * NOUT * OUT_WIDTH * OUT_WIDTH];
 
-  double cpu_freq = get_cpu_freq();
+  double cpu_freq = SpMP::get_cpu_freq();
   printf("freq = %g\n", cpu_freq);
 
   // conv3
@@ -105,11 +106,12 @@ int main(int argc, const char *argv[])
   const int WIDTH = 13;
   const int WOUT = 13;
   const int PAD = 1;
+  int colblock = COL_BLOCK;
 
-  CSR *A = new CSR(argv[1]);
+  SpMP::CSR *A = new SpMP::CSR(argv[1]);
   float *values = (float *)_mm_malloc(sizeof(float)*A->getNnz(), 4096);
 
-  int ncolblocks = NIN/COL_BLOCK;
+  int ncolblocks = NIN/colblock;
 
   vector<int *> rowptr_blocked;
   vector<int *> colidx_blocked;
@@ -156,10 +158,10 @@ int main(int argc, const char *argv[])
       A->colidx[j] = (ic*(WIDTH + PAD) + kernel_row)*(WIDTH + PAD) + kernel_col;
       values[j] = A->values[j];
 
-      int bcol = ic/COL_BLOCK;
+      int bcol = ic/colblock;
       ++nnzs_of_col_blocks[bcol];
 
-      ++rowptr_split[(ic/COL_BLOCK*NOUT + oc)*K + K - 1 - kernel_col + 1];
+      ++rowptr_split[(ic/colblock*NOUT + oc)*K + K - 1 - kernel_col + 1];
 
       int bcol_colmajor = ic/col_major_ic_block;
       ++blockptr_colmajor[bcol_colmajor*NOUT + oc + 1];
@@ -196,14 +198,14 @@ int main(int argc, const char *argv[])
       int kernel_col = c%(WIDTH + PAD);
       int kernel_row = c/(WIDTH + PAD)%(WIDTH + PAD);
       int ic = c/(WIDTH + PAD)/(WIDTH + PAD);
-      int bcol = ic/COL_BLOCK;
+      int bcol = ic/colblock;
 
       colidx_blocked[bcol][nnzs_of_col_blocks[bcol]] = c;
       values_blocked[bcol][nnzs_of_col_blocks[bcol]] = values[j];
       colidx_interleaved[bcol][nnzs_of_col_blocks[bcol]] = c*VLEN;
       nnzs_of_col_blocks[bcol]++;
 
-      int splitid = (ic/COL_BLOCK*NOUT + oc)*K + (K - 1 - kernel_col);
+      int splitid = (ic/colblock*NOUT + oc)*K + (K - 1 - kernel_col);
       colidx_split[rowptr_split[splitid]] = (ic*(WIDTH + PAD) + kernel_row)*16;
       values_split[rowptr_split[splitid]] = values[j];
       ++rowptr_split[splitid];
@@ -238,36 +240,41 @@ int main(int argc, const char *argv[])
     }
   }
 
-  float *input = (float *)_mm_malloc(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*16, 4096);
+  size_t input_size = sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*16;
+  float *input = (float *)_mm_malloc(input_size, 4096);
 //  float *input = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
-  memset((void *)input, 0, sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*16);
-  float *output = (float *)_mm_malloc(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD), 4096);
-//  float *output = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
-  memset((void *)output, 0, sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
-  const float *bias = (float *)_mm_malloc(sizeof(float)*NOUT, 4096);
-//  const float *bias = (float *)malloc_huge_pages(sizeof(float)*NOUT);
-  memset((void *)bias, 0, sizeof(float)*NOUT);
-  const float *bias_multiplier = (float *)_mm_malloc(sizeof(float)*NOUT, 4096);
-//  const float *bias_multiplier = (float *)malloc_huge_pages(sizeof(float)*NOUT);
-  memset((void *)bias_multiplier, 0, sizeof(float)*NOUT);
-  float *scratch = (float *)_mm_malloc(sizeof(float)*OC_BLOCK*WIDTH*16*omp_get_max_threads(), 4096);
-  memset((void *)scratch, 0, sizeof(float)*OC_BLOCK*WIDTH*16*omp_get_max_threads());
+  for (int i = 0; i < input_size/sizeof(float); ++i) {
+    input[i] = i;
+  }
 
-  float *input_scratch = (float *)_mm_malloc(sizeof(float)*omp_get_max_threads()*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC, 4096);
-  memset((void *)input_scratch, 0, sizeof(float)*omp_get_max_threads()*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC);
+  size_t output_size = sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD);
+  float *output = (float *)_mm_malloc(output_size, 4096);
+//  float *output = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
+  memset((void *)output, 0, output_size);
+
+  float *bias = (float *)_mm_malloc(sizeof(float)*NOUT, 4096);
+//  float *bias = (float *)malloc_huge_pages(sizeof(float)*NOUT);
+  for (int i = 0; i < NOUT; ++i) {
+    bias[i] = -i;
+  }
+  float *scratch = (float *)_mm_malloc(sizeof(float)*OC_BLOCK*WIDTH*16*tid, 4096);
+  memset((void *)scratch, 0, sizeof(float)*OC_BLOCK*WIDTH*16*tid);
+
+  float *input_scratch = (float *)_mm_malloc(sizeof(float)*tid*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC, 4096);
+  memset((void *)input_scratch, 0, sizeof(float)*tid*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC);
 
   float *output_colmajor_scratch;
 #ifdef COL_MAJOR_OC_BLOCK
-  posix_memalign((void **)&output_colmajor_scratch, 4096, sizeof(float)*omp_get_max_threads()*COL_MAJOR_OC_BLOCK*SCRATCH_SIZE_PER_IC);
+  posix_memalign((void **)&output_colmajor_scratch, 4096, sizeof(float)*tid*COL_MAJOR_OC_BLOCK*SCRATCH_SIZE_PER_IC);
 #else
-  posix_memalign((void **)&output_colmajor_scratch, 4096, sizeof(float)*omp_get_max_threads()*NOUT*SCRATCH_SIZE_PER_IC);
+  posix_memalign((void **)&output_colmajor_scratch, 4096, sizeof(float)*tid*NOUT*SCRATCH_SIZE_PER_IC);
 #endif
-  memset((void *)output_colmajor_scratch, 0, sizeof(float)*omp_get_max_threads()*NOUT*SCRATCH_SIZE_PER_IC);
+  memset((void *)output_colmajor_scratch, 0, sizeof(float)*tid*NOUT*SCRATCH_SIZE_PER_IC);
 
-  unsigned long long times[omp_get_max_threads()*16];
-  for (int i = 0; i < omp_get_max_threads(); ++i) {
-    times[i*16] = 0;
-    conv_cycles_of_this_batch[i*16] = 0;
+  unsigned long long times[tid*16];
+  for (int tid = 0; tid < tid; ++tid) {
+    times[tid*16] = 0;
+    conv_cycles_of_this_batch[tid*16] = 0;
   }
 
 #if defined(SNIPER) || defined(SDE)
@@ -405,19 +412,19 @@ int main(int argc, const char *argv[])
 
   t = omp_get_wtime() - t;
 
-  unsigned long long max_time = 0, max_time2 = 0;
-  unsigned long long sum_time = 0;
-  for (int i = 0; i < omp_get_max_threads(); ++i) {
-    max_time = std::max(max_time, times[i*16]);
-    max_time2 = std::max(max_time, conv_cycles_of_this_batch[i*16]);
-    sum_time += times[i*16];
+  unsigned long long max_cycles = 0, max_cycles2 = 0;
+  unsigned long long sum_cycles = 0;
+  for (int i = 0; i < tid; ++i) {
+    max_cycles = std::max(max_cycles, times[i*16]);
+    max_cycles2 = std::max(max_cycles, conv_cycles_of_this_batch[i*16]);
+    sum_cycles += times[i*16];
   }
 
   double flops = (double)NOUT*NIN*WIDTH*WIDTH*K*K*2;
   printf("flops = %lld\n", flop_cnt);
   printf("mflops-per-file %g\n", flops/1e6);
-  printf("effective-GF/s %g %g\n", flops*REPEAT*NBATCH/t/1e9, flops*REPEAT*NBATCH/(max_time/cpu_freq)/1e6);
-  printf("time1 = %g, max_time = %g, avg_time = %g, tt = %g\n", t, max_time/cpu_freq, (double)sum_time/omp_get_max_threads()/cpu_freq, max_time2/cpu_freq);
+  printf("effective-GF/s %g %g\n", flops*REPEAT*NBATCH/t/1e9, flops*REPEAT*NBATCH/(max_cycles/cpu_freq)/1e6);
+  printf("wall_clock_time = %g, max_time = %g, avg_time = %g, tt = %g\n", t, max_cycles/cpu_freq, (double)sum_cycles/omp_get_max_threads()/cpu_freq, max_cycles2/cpu_freq);
 
   return 0;
 }

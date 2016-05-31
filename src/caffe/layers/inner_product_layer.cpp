@@ -268,13 +268,13 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
   MKL_INT info;
 
   if (SPMDM_CSR == method) {
-    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+//    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
 
     int ncolblocks = K_/col_block_size;
     double t = omp_get_wtime();
     csrmm(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        bottom_transposed_,
+        bottom_data,
         top_data,
         N_, M_, K_,
         this->blobs_[1]->cpu_data(),

@@ -20,9 +20,8 @@ namespace caffe {
 
 template <typename Dtype>
 BaseConvolutionLayer<Dtype>::BaseConvolutionLayer(const LayerParameter& param)
-    : Layer<Dtype>(param),
-      /*weight_interleaved_(NULL), */input_padded_(NULL), output_scratch_(NULL)
-      /*, input_scratch_(NULL), output_colmajor_scratch_(NULL)*/ {
+    : Layer<Dtype>(param), input_padded_(NULL), output_scratch_(NULL), weight_interleaved_(NULL)
+{
   //is_sparse_format_weights_ = false;
   is_concatenating_weights_features_ = false;
 }
@@ -30,17 +29,9 @@ BaseConvolutionLayer<Dtype>::BaseConvolutionLayer(const LayerParameter& param)
 template <typename Dtype>
 BaseConvolutionLayer<Dtype>::~BaseConvolutionLayer()
 {
-//  free(weight_interleaved_);
+  free(weight_interleaved_);
   free(input_padded_);
   free(output_scratch_);
-//  free(input_scratch_);
-//  free(output_colmajor_scratch_);
-
-  for (int i = 0; i < weight_rowptr_blocked_.size(); ++i) {
-    free(weight_rowptr_blocked_[i]);
-    free(weight_colidx_blocked_[i]);
-    free(weight_values_blocked_[i]);
-  }
 
   for (int i = 0; i < weight_rowptr_.size(); ++i) {
     free(weight_rowptr_[i]);
@@ -48,17 +39,17 @@ BaseConvolutionLayer<Dtype>::~BaseConvolutionLayer()
     free(weight_values_[i]);
   }
 
-//  for (int i = 0; i < weight_blockptr_colmajor_.size(); ++i) {
-//    free(weight_blockptr_colmajor_[i]);
-//    free(weight_kidx_colmajor_[i]);
-//    free(weight_values_colmajor_[i]);
-//  }
+  for (int i = 0; i < weight_rowptr_blocked_.size(); ++i) {
+    free(weight_rowptr_blocked_[i]);
+    free(weight_colidx_blocked_[i]);
+    free(weight_values_blocked_[i]);
+  }
 
-//  for (int i = 0; i < weight_colidx_interleaved_.size(); ++i) {
-//    free(weight_rowptr_interleaved_[i]);
-//    free(weight_colidx_interleaved_[i]);
-//    free(weight_values_interleaved_[i]);
-//  }
+  for (int i = 0; i < weight_rowptr_split_.size(); ++i) {
+    free(weight_rowptr_split_[i]);
+    free(weight_colidx_split_[i]);
+    free(weight_values_split_[i]);
+  }
 }
 
 bool barrier_initialized = false;

@@ -32,6 +32,8 @@ ifeq (yes, $(DBG))
   CXXFLAGS += -O0 -g
   ifeq (yes, $(KNL))
     CXXFLAGS += -xMIC-AVX512
+  else
+    CXXFLAGS += -xHost
   endif
 else
   CXXFLAGS += -O3 -DNDEBUG -DMKL_DIRECT_CALL
@@ -42,14 +44,20 @@ else
   endif
 endif
 
-conv1_test: conv1_test.cpp
+sconv_test: sconv_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+fc_test: fc_test.cpp ../../include/caffe/util/spgemm.hpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 csrmm_test: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-conv1_test: conv1_test.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+sconv_test.s: sconv_test.cpp
+	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)
+
+fc_test.s: fc_test.cpp ../../include/caffe/util/spgemm.hpp
+	$(CXX) $(CXXFLAGS) -o $@ -S $< $(LDFLAGS)
 
 csrmm_test.s: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)

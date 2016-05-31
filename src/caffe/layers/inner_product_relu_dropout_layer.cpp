@@ -71,7 +71,11 @@ void InnerProductReLUDropoutLayer<double>::WeightAlign(){
   NOT_IMPLEMENTED;
 }
 
+#ifdef __AVX512F__
+static int col_block_size = 256;
+#else
 static int col_block_size = 128;
+#endif
 
 template<>
 void InnerProductReLUDropoutLayer<float>::WeightAlign(){
@@ -108,19 +112,64 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 
     weight_i_blocked_[0] = 0;
     int nnz = 0;
-    for (int cb = 0; cb < ncolblocks; ++cb) {
-      for (int i = 0; i < N_; ++i) {
-        for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-          float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-          if (v != 0) {
-            weight_j_blocked_[nnz] = M_*j;
-            weight_values_blocked_[nnz] = v;
-            ++nnz;
+    int nthreads = omp_get_max_threads();
+    int i_per_thread = (N_ + nthreads - 1)/nthreads;
+    for (int tid = 0; tid < nthreads; ++tid) {
+      int ibegin = std::min(i_per_thread*tid, N_);
+      int iend = std::min(ibegin + i_per_thread, N_);
+      for (int cb = 0; cb < ncolblocks; ++cb) {
+        for (int i = ibegin; i < iend; ++i) {
+          for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
+            float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
+            if (v != 0) {
+              weight_j_blocked_[nnz] = M_*j;
+              weight_values_blocked_[nnz] = v;
+              ++nnz;
+            }
           }
+          weight_i_blocked_[ncolblocks*ibegin + cb*(iend - ibegin) + (i - ibegin) + 1] = nnz;
         }
-        weight_i_blocked_[cb*N_ + i + 1] = nnz;
       }
     }
+
+    csr.m = m;
+    csr.n = n;
+
+    SpMP::CSR A(m, n, nnz);
+    nnz = 0;
+    A.rowptr[0] = 0;
+    for (int i = 0; i < N_; ++i) {
+      for (int j = 0; j < K_; ++j) {
+        float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
+        if (v != 0) {
+          A.colidx[nnz] = j;
+          A.values[nnz] = v;
+          ++nnz;
+        }
+      }
+      A.rowptr[i + 1] = nnz;
+    }
+
+    SpMP::CSR *AT = A.transpose();
+    int *rowPerm = new int[m], *rowInversePerm = new int[m];
+    int *colPerm = new int[n], *colInversePerm = new int[n];
+    bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
+    FREE(A.diagptr);
+    SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
+    SpMP::CSR *ATReordered = AReordered->transpose();
+
+//    A.storeMatrixMarket((layerparam.name() + ".mtx").c_str());
+
+    LOG(INFO) << "Average width of " << m << " x " << n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
+    LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
+
+    delete[] rowPerm;
+    delete[] rowInversePerm;
+    delete[] colPerm;
+    delete[] colInversePerm;
+    delete AT;
+    delete AReordered;
+    delete ATReordered;
   }
   else if (SPGEMM_CSR == method && transpose_ || SPGEMM_CSC == method && !transpose_) {
 	  int m = transpose_ ? K_ : N_;
@@ -342,13 +391,16 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
   MKL_INT info;
 
   if (SPMDM_CSR == method) {
-    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+    std::string name(this->layer_param_.name());
+    if (name == "fc6") {
+      mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+    }
 
     int ncolblocks = K_/col_block_size;
     double t = omp_get_wtime();
     csrmm_fused(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        bottom_transposed_,
+        name == "fc6" ? bottom_transposed_ : bottom_data,
         top_data,
         N_, M_, K_,
         this->blobs_[1]->cpu_data(),
@@ -356,10 +408,9 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[ncolblocks*N_]*M_/t/1e9;
 
-    memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+//    memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
+//    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
 
-    std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {
       total_conv_cycles[name] = 0;
       total_conv_flops[name] = 0;

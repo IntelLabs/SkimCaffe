@@ -681,8 +681,8 @@ static void __attribute__((noinline)) sconv2_fused(
 
 #pragma unroll(6)
       for (int w = 0; w < 6; ++w) {
-        _mm_store_ps(output + (oc*WOUT + h)*WOUT + w*4, sum[0][w]);
-        _mm_store_ps(output + (oc*WOUT + h + 1)*WOUT + w*4, sum[1][w]);
+        _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + w*4, sum[0][w]);
+        _mm_storeu_ps(output + (oc*WOUT + h + 1)*WOUT + w*4, sum[1][w]);
       }
       _mm_maskmoveu_si128(_mm_castps_si128(sum[0][6]), mask_v, (char *)(output + (oc*WOUT + h)*WOUT + 24));
       _mm_maskmoveu_si128(_mm_castps_si128(sum[1][6]), mask_v, (char *)(output + (oc*WOUT + h + 1)*WOUT + 24));
@@ -706,7 +706,7 @@ static void __attribute__((noinline)) sconv2_fused(
 
 #pragma unroll(6)
     for (int w = 0; w < 6; ++w) {
-      _mm_store_ps(output + (oc*WOUT + h)*WOUT + w*4, sum[0][w]);
+      _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + w*4, sum[0][w]);
     }
     _mm_maskmoveu_si128(_mm_castps_si128(sum[0][6]), mask_v, (char *)(output + (oc*WOUT + h)*WOUT + 24));
 
@@ -889,7 +889,7 @@ static void __attribute__((noinline)) sconv2_fused(
   } // for each out channel
 }
 
-static void __attribute__((noinline)) sconv2_overfeat_fused(
+static void __attribute__((noinline)) sconv2_overfeat(
     // input features
     const float *input,
     // weights
@@ -1105,119 +1105,6 @@ static void __attribute__((noinline)) sconv2_overfeat_fused(
 #endif
 
     conv_cycles_of_this_batch[tid*16] += __rdtsc() - t;
-
-//    if (out_channel%8 != 7) continue;
-//
-//    t = __rdtsc();
-//
-//    int t_offset = 8*tid_in_group;
-//
-//    // transpose to vectorize pooling layer over multiple channels
-//    for (int h = 0; h < WOUT; ++h) {
-//      for (int w = 0; w < WOUT/8*8; w += 8) {
-//        __m256 v0 = _mm256_load_ps(output + (t_offset*WOUT + h)*32 + w);
-//        __m256 v1 = _mm256_load_ps(output + ((t_offset + 1)*WOUT + h)*32 + w);
-//        __m256 v2 = _mm256_load_ps(output + ((t_offset + 2)*WOUT + h)*32 + w);
-//        __m256 v3 = _mm256_load_ps(output + ((t_offset + 3)*WOUT + h)*32 + w);
-//        __m256 v4 = _mm256_load_ps(output + ((t_offset + 4)*WOUT + h)*32 + w);
-//        __m256 v5 = _mm256_load_ps(output + ((t_offset + 5)*WOUT + h)*32 + w);
-//        __m256 v6 = _mm256_load_ps(output + ((t_offset + 6)*WOUT + h)*32 + w);
-//        __m256 v7 = _mm256_load_ps(output + ((t_offset + 7)*WOUT + h)*32 + w);
-//
-//        transpose8_ps(v0, v1, v2, v3, v4, v5, v6, v7);
-//
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + w)*8, v0);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 1))*8, v1);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 2))*8, v2);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 3))*8, v3);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 4))*8, v4);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 5))*8, v5);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 6))*8, v6);
-//        _mm256_store_ps(output + (((nthreads_per_group + tid_in_group)*32 + h)*WOUT + (w + 7))*8, v7);
-//      }
-//      for (int w = WOUT/8*8; w < WOUT; ++w) {
-//        for (int i = 0; i < 8; ++i) {
-//          output[(((nthreads_per_group + tid_in_group)*32 + h)*WOUT + w)*8 + i] = output[((t_offset + i)*WOUT + h)*32 + w];
-//        }
-//      }
-//    }
-//
-//    if (0 == tid) transpose_cycle += __rdtsc() - t;
-//    t = __rdtsc();
-//
-//    const int STRIDE_POOL = 2;
-//    const int K_POOL = 2;
-//    const int POOLED_WIDTH = (WOUT - K_POOL + STRIDE_POOL - 1) / STRIDE_POOL + 1; // (24 - 2 + 1)/2 + 1 = 12
-//
-//    const float *conv_top_data_cur = output + (nthreads_per_group + tid_in_group)*32*WOUT*8;
-//    float *pool_top_data_cur = pool_top + (out_channel - 7)*POOLED_WIDTH*POOLED_WIDTH;
-//    int *mask_cur = mask + (out_channel - 7)*POOLED_WIDTH*POOLED_WIDTH;
-//
-//    __declspec(aligned(64)) float maximum[8];
-//
-//    __declspec(aligned(64)) int identity[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-//    __m256i identity_v = _mm256_load_si256((__m256i *)identity);
-//
-//    for (int ph = 0; ph < POOLED_WIDTH; ++ph) {
-//      __declspec(aligned(64)) int mask[8];
-//
-//      int hstart = ph * STRIDE_POOL;
-//      int hend = hstart + K_POOL;
-//
-//      for (int pw = 0; pw < POOLED_WIDTH; ++pw) {
-//        int wstart = pw * STRIDE_POOL;
-//        __m256 maximum_v = _mm256_setzero_ps(); // JSP: using 0 instead of -FLT_MAX does ReLU for us.
-//        __m256 mask_v = _mm256_setzero_ps();
-//        __m256 cmp_v, in_v;
-//
-//        int index = hstart * WOUT + wstart;
-//        in_v = _mm256_load_ps(conv_top_data_cur + index*8);
-//        cmp_v = _mm256_cmp_ps(in_v, maximum_v, _CMP_LE_OQ);
-//        maximum_v =  _mm256_blendv_ps(in_v, maximum_v, cmp_v);
-//        mask_v = _mm256_blendv_ps(
-//            _mm256_castsi256_ps(_mm256_add_epi32(_mm256_set1_epi32(index*8), identity_v)),
-//            mask_v,
-//            cmp_v);
-//
-//        index = hstart * WOUT + wstart + 1;
-//        in_v = _mm256_load_ps(conv_top_data_cur + index*8);
-//        cmp_v = _mm256_cmp_ps(in_v, maximum_v, _CMP_LE_OQ);
-//        maximum_v =  _mm256_blendv_ps(in_v, maximum_v, cmp_v);
-//        mask_v = _mm256_blendv_ps(
-//            _mm256_castsi256_ps(_mm256_add_epi32(_mm256_set1_epi32(index*8), identity_v)),
-//            mask_v,
-//            cmp_v);
-//
-//        index = (hstart + 1) * WOUT + wstart;
-//        in_v = _mm256_load_ps(conv_top_data_cur + index*8);
-//        cmp_v = _mm256_cmp_ps(in_v, maximum_v, _CMP_LE_OQ);
-//        maximum_v =  _mm256_blendv_ps(in_v, maximum_v, cmp_v);
-//        mask_v = _mm256_blendv_ps(
-//            _mm256_castsi256_ps(_mm256_add_epi32(_mm256_set1_epi32(index*8), identity_v)),
-//            mask_v,
-//            cmp_v);
-//
-//        index = (hstart + 1) * WOUT + wstart + 1;
-//        in_v = _mm256_load_ps(conv_top_data_cur + index*8);
-//        cmp_v = _mm256_cmp_ps(in_v, maximum_v, _CMP_LE_OQ);
-//        maximum_v =  _mm256_blendv_ps(in_v, maximum_v, cmp_v);
-//        mask_v = _mm256_blendv_ps(
-//            _mm256_castsi256_ps(_mm256_add_epi32(_mm256_set1_epi32(index*8), identity_v)),
-//            mask_v,
-//            cmp_v);
-//
-//        _mm256_store_ps(maximum, maximum_v);
-//        _mm256_store_ps((float *)mask, mask_v);
-//
-//        const int pool_index = ph * POOLED_WIDTH + pw;
-//        for (int j = 0; j < 8; ++j) {
-//          pool_top_data_cur[pool_index + j*POOLED_WIDTH*POOLED_WIDTH] = maximum[j];
-//          mask_cur[pool_index + j*POOLED_WIDTH*POOLED_WIDTH] = mask[j];
-//        }
-//      }
-//    }
-//
-//    if (0 == tid) pool_cycle += __rdtsc() - t;
   } // for each out channel
 }
 
@@ -1293,7 +1180,7 @@ void caffe_cpu_sconv(
         out_channels);
     }
     else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
-      sconv2_overfeat_fused(
+      sconv2_overfeat(
         input_padded,
         rowptr, colidx, values,
         bias,

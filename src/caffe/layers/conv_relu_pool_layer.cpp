@@ -238,12 +238,6 @@ void ConvolutionReLUPoolLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bo
           this->forward_cpu_bias(middle_current, bias);
         }
 
-//        if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV &&
-//            kernel_w_ == 2) {
-//          // overfeat conv2 is fused with pool
-//          continue;
-//        }
-
         // Pooling
         const int top_count = top[0]->count();
         // We'll output the mask to top[1] if it's of size >1.
