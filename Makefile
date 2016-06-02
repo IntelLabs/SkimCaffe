@@ -319,7 +319,7 @@ endif
 
 # Debugging
 ifeq ($(DEBUG), 1)
-	COMMON_FLAGS += -DDEBUG -g -O0
+	COMMON_FLAGS += -DDEBUG -g -O0 -xHost
 	NVCCFLAGS += -G
 else
 	COMMON_FLAGS += -DNDEBUG -O3 -xHost
