@@ -147,7 +147,7 @@ int main(int argc, const char *argv[])
             else {
               // When we have enough bits for column indices,
               // we pre-multiply it with # of columns of matrix B
-              weight_j_blocked_[nnz] = NBATCH*c;
+              weight_j_blocked_[nnz] = NBATCH/num_of_C_col_partitions*c;
             }
             weight_values_blocked_[nnz] = A->values[j];
             ++nnz;
@@ -164,6 +164,18 @@ int main(int argc, const char *argv[])
 //  float *input = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
   for (int i = 0; i < input_size/sizeof(float); ++i) {
     input[i] = i%123;
+  }
+
+  // rearrange input
+  float *input_rearranged = (float *)_mm_malloc(input_size, 4096);
+  int col_block_size = NBATCH/num_of_C_col_partitions;
+  for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
+    for (int i = 0; i < NIN; ++i) {
+      for (int j = 0; j < col_block_size; ++j) {
+        input_rearranged[(col_block*NIN + i)*col_block_size + j] =
+            input[i*NBATCH + col_block*col_block_size + j];
+      }
+    }
   }
 
   size_t output_size = sizeof(float)*NOUT*NIN;
@@ -243,7 +255,7 @@ int main(int argc, const char *argv[])
     // 2D decomposition of C
     csrmm_fused_C_decomposed(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        input,
+        input_rearranged,
         output,
         NOUT, NBATCH, NIN,
         bias,

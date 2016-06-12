@@ -634,6 +634,7 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
     assert(k_end - k_begin == CSRMM_REG_BLOCK_SIZE*VLEN);
 
     SIMDFPTYPE acc[CSRMM_REG_BLOCK_SIZE/**2*/];
+    const float *B_pr = B + tid_col*K*k_per_thread;
     float *C_pr = C + (tid_row*num_of_C_col_partitions + tid_col)*i_per_thread*k_per_thread;
 
     int A_col_block = 0;
@@ -656,8 +657,8 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
 #define CSRMM_FMADD(j, k_offset) \
       _Pragma("unroll(CSRMM_REG_BLOCK_SIZE)") \
       for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) { \
-        acc[k + k_offset] = _MM_FMADD(_MM_SET1(A_data[j]), _MM_LOAD(B + A_j[j] + k_begin + k*VLEN), acc[k + k_offset]); \
-        _mm_prefetch((const char *)(B + A_j[j + CSRMM_J_PREFETCH_DISTANCE] + k_begin + k*VLEN), _MM_HINT_T0); \
+        acc[k + k_offset] = _MM_FMADD(_MM_SET1(A_data[j]), _MM_LOAD(B_pr + A_j[j] + k*VLEN), acc[k + k_offset]); \
+        _mm_prefetch((const char *)(B_pr + A_j[j + CSRMM_J_PREFETCH_DISTANCE] + k*VLEN), _MM_HINT_T0); \
         /*if (i == ROW_TO_DEBUG && k_begin + k*VLEN == COL_TO_DEBUG/VLEN*VLEN) { \
           printf(" + %g*%d:%g", A_data[j], A_j[j]/N, B[A_j[j] + k_begin + k*VLEN + COL_TO_DEBUG%VLEN]); \
         }*/ \
