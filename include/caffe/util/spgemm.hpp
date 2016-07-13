@@ -634,7 +634,19 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
     assert(k_end - k_begin == CSRMM_REG_BLOCK_SIZE*VLEN);
 
     SIMDFPTYPE acc[CSRMM_REG_BLOCK_SIZE/**2*/];
+#define CSRMM_REARRANGE_B
+#ifdef CSRMM_REARRANGE_B
+#ifdef __AVX512F__
+#define CSRMM_REPLICATE_B
+#endif
+#ifdef CSRMM_REPLICATE_B
+    const float *B_pr = B + (tid_col*num_of_C_row_partitions + tid_row)*K*k_per_thread;
+#else
     const float *B_pr = B + tid_col*K*k_per_thread;
+#endif
+#else
+    const float *B_pr = B + k_begin;
+#endif
     float *C_pr = C + (tid_row*num_of_C_col_partitions + tid_col)*i_per_thread*k_per_thread;
 
     int A_col_block = 0;

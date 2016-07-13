@@ -147,7 +147,11 @@ int main(int argc, const char *argv[])
             else {
               // When we have enough bits for column indices,
               // we pre-multiply it with # of columns of matrix B
+#ifdef CSRMM_REARRANGE_B
               weight_j_blocked_[nnz] = NBATCH/num_of_C_col_partitions*c;
+#else
+              weight_j_blocked_[nnz] = NBATCH*c;
+#endif
             }
             weight_values_blocked_[nnz] = A->values[j];
             ++nnz;
@@ -167,13 +171,20 @@ int main(int argc, const char *argv[])
   }
 
   // rearrange input
-  float *input_rearranged = (float *)_mm_malloc(input_size, 4096);
+  float *input_rearranged = (float *)_mm_malloc(input_size*num_of_C_row_partitions, 4096);
   int col_block_size = NBATCH/num_of_C_col_partitions;
   for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
     for (int i = 0; i < NIN; ++i) {
       for (int j = 0; j < col_block_size; ++j) {
+#ifdef CSRMM_REPLICATE_B
+        for (int row_block = 0; row_block < num_of_C_row_partitions; ++row_block) {
+          input_rearranged[((col_block*num_of_C_row_partitions + row_block)*NIN + i)*col_block_size + j] =
+              input[i*NBATCH + col_block*col_block_size + j];
+        }
+#else
         input_rearranged[(col_block*NIN + i)*col_block_size + j] =
             input[i*NBATCH + col_block*col_block_size + j];
+#endif
       }
     }
   }
@@ -255,7 +266,11 @@ int main(int argc, const char *argv[])
     // 2D decomposition of C
     csrmm_fused_C_decomposed(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
+#ifdef CSRMM_REARRANGE_B
         input_rearranged,
+#else
+        input,
+#endif
         output,
         NOUT, NBATCH, NIN,
         bias,
