@@ -13,8 +13,8 @@
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
 #include "caffe/layers/conv_relu_pool_layer.hpp"
 #include "caffe/util/conv.hpp"
-#include "CSR.hpp"
-#include "reordering/BFSBipartite.hpp"
+#include "SpMP/CSR.hpp"
+#include "SpMP/reordering/BFSBipartite.hpp"
 
 namespace caffe {
 

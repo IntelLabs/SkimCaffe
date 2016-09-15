@@ -12,6 +12,7 @@
 #include <string>
 #include <omp.h>
 #include <immintrin.h>
+#include "SpMP/synk/barrier.hpp"
 
 struct CSR
 {

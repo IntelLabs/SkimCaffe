@@ -7,8 +7,8 @@
 #include "caffe/layers/inner_product_relu_dropout_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/spgemm.hpp"
-#include "CSR.hpp"
-#include "reordering/BFSBipartite.hpp"
+#include "SpMP/CSR.hpp"
+#include "SpMP/reordering/BFSBipartite.hpp"
 
 std::map<std::string, CSR> layer2weight;
 std::map<std::string, float *> layer2bottom;
@@ -64,7 +64,7 @@ enum
   GEMM,
 };
 
-static int method = SPMDM_CSR;
+static int method = GEMM; // SPMDM_CSR;
 
 template<>
 void InnerProductReLUDropoutLayer<double>::WeightAlign(){
@@ -390,6 +390,7 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
   };
   MKL_INT info;
 
+#if 0
   if (SPMDM_CSR == method) {
     std::string name(this->layer_param_.name());
     if (name == "fc6") {
@@ -496,7 +497,9 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
 //      }
 //    }
   }
-  else {
+  else
+#endif
+  {
     assert(GEMM == method);
     caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
         M_, N_, K_, (float)1.,
@@ -572,6 +575,19 @@ void InnerProductReLUDropoutLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*
 
 #ifdef CPU_ONLY
 STUB_GPU(InnerProductReLUDropoutLayer);
+#else
+template <typename Dtype>
+void InnerProductReLUDropoutLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
+    const vector<Blob<Dtype>*>& top) {
+  NOT_IMPLEMENTED;
+}
+
+template <typename Dtype>
+void InnerProductReLUDropoutLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
+    const vector<bool>& propagate_down,
+    const vector<Blob<Dtype>*>& bottom) {
+  NOT_IMPLEMENTED;
+}
 #endif
 
 INSTANTIATE_CLASS(InnerProductReLUDropoutLayer);

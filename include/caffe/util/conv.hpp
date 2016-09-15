@@ -10,7 +10,7 @@
 
 #include <vector>
 #include <immintrin.h>
-#include "synk/barrier.hpp"
+#include "SpMP/synk/barrier.hpp"
 
 #ifdef __AVX512F__
 #ifdef SNIPER

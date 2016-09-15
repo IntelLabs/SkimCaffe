@@ -382,11 +382,23 @@ void ConvolutionReLUPoolLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bo
 template <typename Dtype>
 void ConvolutionReLUPoolLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
       const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
-  assert(false); // TODO
+  NOT_IMPLEMENTED; // TODO
 }
 
 #ifdef CPU_ONLY
 STUB_GPU(ConvolutionReLUPoolLayer);
+#else
+template <typename Dtype>
+void ConvolutionReLUPoolLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
+      const vector<Blob<Dtype>*>& top) {
+  NOT_IMPLEMENTED;
+}
+
+template <typename Dtype>
+void ConvolutionReLUPoolLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+  NOT_IMPLEMENTED;
+}
 #endif
 
 INSTANTIATE_CLASS(ConvolutionReLUPoolLayer);

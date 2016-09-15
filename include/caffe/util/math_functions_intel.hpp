@@ -10,7 +10,7 @@
 #include "caffe/util/device_alternate.hpp"
 #include "caffe/util/mkl_alternate.hpp"
 
-#include "synk/barrier.hpp"
+#include "SpMP/synk/barrier.hpp"
 
 extern synk::Barrier *barriers[256];
 
