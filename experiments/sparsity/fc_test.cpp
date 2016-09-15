@@ -44,7 +44,10 @@ int flop_cnt = 0;
 
 int main(int argc, const char *argv[])
 {
-#define FC
+  if (argc < 2) {
+    fprintf(stderr, "Usage: %s matrix_in_matrix_market_format\n", argv[0]);
+    return -1;
+  }
 
   const int NBATCH = 256;
 
@@ -54,6 +57,8 @@ int main(int argc, const char *argv[])
   printf("freq = %g\n", cpu_freq);
 
   SpMP::CSR *A = new SpMP::CSR(argv[1]);
+  printf("nnz_proportion = %g\n", (double)A->getNnz()/A->m/A->n);
+
 #if defined(SNIPER) || defined(SDE)
   int NOUT = A->m/32; // scale down to 1 tile
 #elif defined(SDE)
@@ -63,7 +68,7 @@ int main(int argc, const char *argv[])
 #endif
   int NIN = A->n;
 
-//#define B_DECOMPOSITION
+//#define B_DECOMPOSITION // FIXME: currently not supported!
 
 #ifdef B_DECOMPOSITION
   typedef int idx_t;

@@ -1,6 +1,6 @@
 CXX = icpc
-CXXFLAGS = -fopenmp -I../../.. -ISpMP
-LDFLAGS = -LSpMP -lspmp -mkl
+CXXFLAGS = -fopenmp -I../../src/
+LDFLAGS = -L../../src/SpMP -lspmp -mkl
 
 #SEP = yes
 ifeq (yes, $(SEP))
@@ -63,4 +63,4 @@ csrmm_test.s: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)
 
 clean:
-	rm csrmm_test
+	rm -f sconv_test fc_test csrmm_test
