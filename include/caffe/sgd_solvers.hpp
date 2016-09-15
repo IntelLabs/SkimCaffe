@@ -30,8 +30,12 @@ class SGDSolver : public Solver<Dtype> {
   virtual void Normalize(int param_id);
   virtual Dtype Regularize(int param_id);
   virtual Dtype GetSparsity(int param_id);
+  virtual Dtype GetWinogradSparsity(int param_id);
+  virtual Dtype GetFiberSparsity(int param_id, int mode);
+  virtual Dtype GetSliceSparsity(int param_id, int mode);
   virtual Dtype GetGroupSparsity(int param_id, bool dimen=true);
   virtual Dtype GetGroupSparsity(int param_id, int ydimen,int xdimen);
+  virtual void PrintWinogradFiberSliceSparsity();
   virtual Dtype GroupLassoRegularize(int param_id);
   virtual void ComputeUpdateValue(int param_id, Dtype rate);
   virtual void ClipGradients();
@@ -44,7 +48,7 @@ class SGDSolver : public Solver<Dtype> {
   // update maintains update related data and is not needed in snapshots.
   // temp maintains other information that might be needed in computation
   //   of gradients/updates and is not needed in snapshots
-  vector<shared_ptr<Blob<Dtype> > > history_, update_, temp_;
+  vector<shared_ptr<Blob<Dtype> > > history_, update_, temp_, temp_winograd_;
 
   DISABLE_COPY_AND_ASSIGN(SGDSolver);
 };
