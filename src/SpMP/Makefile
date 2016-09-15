@@ -4,7 +4,7 @@ LOADIMBA=${loadimba}
 LIBRARY		= libspmp.a
 
 CC		= icpc
-CCFLAGS		= -openmp -std=c++11 -ipp -Wno-deprecated -Wall
+CCFLAGS		= -qopenmp -std=c++11 -ipp -Wno-deprecated -Wall
 
 ifeq (yes, $(DBG))
   CCFLAGS += -O0 -g

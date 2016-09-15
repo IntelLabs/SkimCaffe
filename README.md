@@ -35,3 +35,13 @@ Please cite Caffe in your publications if it helps your research:
       Title = {Caffe: Convolutional Architecture for Fast Feature Embedding},
       Year = {2014}
     }
+
+SkimCaffe specific description:
+
+We assume you have a recent Intel compiler (tested with 16.x version) and MKL installed.
+We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
+
+1) compile SpMP:
+
+cd experiments/sparsity/SpMP
+make

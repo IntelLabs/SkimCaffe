@@ -22,7 +22,7 @@
 
 # To customize your choice of compiler, uncomment and set the following.
 # N.B. the default for Linux is g++ and the default for OSX is clang++
-# CUSTOM_CXX := g++
+CUSTOM_CXX := icpc
 
 # CUDA directory contains bin/ and lib/ directories that we need.
 CUDA_DIR := /usr/local/cuda
@@ -43,7 +43,7 @@ CUDA_ARCH := -gencode arch=compute_20,code=sm_20 \
 # atlas for ATLAS (default)
 # mkl for MKL
 # open for OpenBlas
-BLAS := atlas
+BLAS := mkl
 # Custom (MKL/ATLAS/OpenBLAS) include and lib directories.
 # Leave commented to accept the defaults for your choice of BLAS
 # (which should work)!
@@ -87,8 +87,8 @@ PYTHON_LIB := /usr/lib
 # WITH_PYTHON_LAYER := 1
 
 # Whatever else you find you need goes here.
-INCLUDE_DIRS := $(PYTHON_INCLUDE) /usr/local/include
-LIBRARY_DIRS := $(PYTHON_LIB) /usr/local/lib /usr/lib
+INCLUDE_DIRS := $(PYTHON_INCLUDE) /usr/local/include src
+LIBRARY_DIRS := $(PYTHON_LIB) /usr/local/lib /usr/lib src/SpMP
 
 # If Homebrew is installed at a non standard location (for example your home directory) and you use it for general dependencies
 # INCLUDE_DIRS += $(shell brew --prefix)/include

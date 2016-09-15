@@ -319,10 +319,11 @@ endif
 
 # Debugging
 ifeq ($(DEBUG), 1)
-	COMMON_FLAGS += -DDEBUG -g -O0 -xHost
+	COMMON_FLAGS += -DDEBUG -g -O0
 	NVCCFLAGS += -G
 else
-	COMMON_FLAGS += -DNDEBUG -O3 -xHost
+	COMMON_FLAGS += -DNDEBUG -O3
+	CXXFLAGS += -xHost
 endif
 
 # cuDNN acceleration configuration.
@@ -407,7 +408,8 @@ LIBRARY_DIRS += $(LIB_BUILD_DIR)
 CXXFLAGS += -MMD -MP
 
 #openmp
-#CXXFLAGS += -fopenmp
+CXXFLAGS += -qopenmp
+LINKFLAGS += -qopenmp
 
 # Complete build flags.
 COMMON_FLAGS += $(foreach includedir,$(INCLUDE_DIRS),-I$(includedir))
