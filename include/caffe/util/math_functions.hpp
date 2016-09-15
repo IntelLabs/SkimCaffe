@@ -144,13 +144,13 @@ inline int8_t caffe_sign(Dtype val) {
 template<typename Dtype>
 inline int8_t caffe_if_zerout(Dtype val) {
 	Dtype thre = Dtype(ZEROUT_THRESHOLD);
-	if(val<thre && val>(-thre)) return 1;
+	if(val<=thre && val>=(-thre)) return 1;
 	else return 0;
 }
 template<typename Dtype>
 inline int8_t caffe_if_nonzerout(Dtype val) {
 	Dtype thre = Dtype(ZEROUT_THRESHOLD);
-	if(val>=thre || val<=(-thre)) return 1;
+	if(val>thre || val<(-thre)) return 1;
 	else return 0;
 }
 // The following two macros are modifications of DEFINE_VSL_UNARY_FUNC
@@ -197,6 +197,12 @@ void caffe_cpu_all_zero_mask(const int M, const int N, const Dtype *X, Dtype* y)
 //get column(true)/row(false) sparsity in matrix
 template <typename Dtype>
 Dtype caffe_cpu_group_sparsity(const int M, const int N, const Dtype *X, bool dimen=true);
+
+template <typename Dtype>
+Dtype caffe_cpu_fiber_sparsity(const int I, const int J, const int K, const Dtype *X, int mode, Dtype thre);
+
+template <typename Dtype>
+Dtype caffe_cpu_slice_sparsity(const int I, const int J, const int K, const Dtype *X, int mode, Dtype thre);
 
 //get masked cols
 template <typename Dtype>
@@ -328,6 +334,9 @@ void caffe_gpu_sign(const int n, const Dtype* x, Dtype* y);
 
 template<typename Dtype>
 void caffe_gpu_if_zerout(const int n, const Dtype* x, Dtype* y);
+
+template<typename Dtype>
+void caffe_gpu_if_zerout(const int n, const Dtype* x, Dtype* y, Dtype th);
 
 template<typename Dtype>
 void caffe_gpu_if_nonzerout(const int n, const Dtype* x, Dtype* y);

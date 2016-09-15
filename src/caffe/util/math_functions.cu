@@ -168,7 +168,7 @@ __global__ void zerout_kernel(void * mutable_gpu_data, int count, Dtype thre){
 		//  }
 	int tid = threadIdx.x + blockDim.x*blockIdx.x;
 	while(tid<count){
-		if(data_ptr_tmp[tid]<thre && data_ptr_tmp[tid]>(-thre)){
+		if(data_ptr_tmp[tid]<=thre && data_ptr_tmp[tid]>=(-thre)){
 			data_ptr_tmp[tid] = 0;
 		}
 		tid += gridDim.x*blockDim.x;
@@ -218,6 +218,27 @@ template void caffe_gpu_shrinkage<int>(void * mutable_gpu_data, const int count,
 template void caffe_gpu_shrinkage<unsigned int>(void * mutable_gpu_data, const int count, unsigned int th);
 template void caffe_gpu_shrinkage<float>(void * mutable_gpu_data, const int count, float th);
 template void caffe_gpu_shrinkage<double>(void * mutable_gpu_data, const int count, double th);
+
+
+template  <typename Dtype>
+__global__ void if_zerout_kernel(const int n, const Dtype * x, Dtype *y, Dtype thre){
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+	while(tid<n){
+		y[tid] = (x[tid]<=thre && x[tid]>=(-thre)) ? 1 : 0;
+		tid += gridDim.x*blockDim.x;
+	}
+}
+
+template <typename Dtype>
+void caffe_gpu_if_zerout(const int n, const Dtype * x, Dtype *y, Dtype th){
+	if_zerout_kernel<<<CAFFE_GET_BLOCKS(n), CAFFE_CUDA_NUM_THREADS>>>(n, x, y, th);
+}
+
+template void caffe_gpu_if_zerout<int>(const int n, const int * x, int *y, int th);
+template void caffe_gpu_if_zerout<unsigned int>(const int n, const unsigned int* x, unsigned int *y, unsigned int th);
+
+template void caffe_gpu_if_zerout<float>(const int n, const float * x, float *y, float th);
+template void caffe_gpu_if_zerout<double>(const int n, const double* x, double *y, double th);
 
 
 //template <>
@@ -838,8 +859,8 @@ void caffe_gpu_powx<double>(const int N, const double* a,
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(sign, y[index] = (Dtype(0) < x[index])
                                       - (x[index] < Dtype(0)));
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(sgnbit, y[index] = signbit(x[index]));
-DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_zerout, y[index] = ((x[index] < Dtype(ZEROUT_THRESHOLD) && x[index] > Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) );
-DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_nonzerout, y[index] = ((x[index] >= Dtype(ZEROUT_THRESHOLD) || x[index] <= Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) )
+DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_zerout, y[index] = ((x[index] <= Dtype(ZEROUT_THRESHOLD) && x[index] >= Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) );
+DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_nonzerout, y[index] = ((x[index] > Dtype(ZEROUT_THRESHOLD) || x[index] < Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) )
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(eltwise_multi, y[index] = y[index]*x[index] )
 void caffe_gpu_rng_uniform(const int n, unsigned int* r) {
   CURAND_CHECK(curandGenerate(Caffe::curand_generator(), r, n));

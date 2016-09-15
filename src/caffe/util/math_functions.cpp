@@ -641,6 +641,122 @@ void caffe_cpu_all_zero_mask(const int M, const int N, const int *X, int* y);
 template
 void caffe_cpu_all_zero_mask(const int M, const int N, const unsigned int *X, unsigned int* y);
 
+template<typename Dtype>
+Dtype caffe_cpu_fiber_sparsity(
+  const int I, const int J, const int K,
+  const Dtype *x, int mode, Dtype thre)
+{
+  Dtype sparsity = (Dtype)0;
+  int counter = 0;
+  if (0 == mode) {
+    for (int fiber = 0; fiber < J*K; ++fiber) {
+      counter++;
+      for (int i = 0; i < I; ++i) {
+        if (x[i*J*K + fiber] > thre || x[i*J*K + fiber] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)(J*K);
+  }
+  else if (1 == mode) {
+    for (int fiber = 0; fiber < I*K; ++fiber) {
+      counter++;
+      for (int j = 0; j < J; ++j) {
+        if (x[((fiber/K)*J + j)*K + fiber%K] > thre || x[((fiber/K)*J + j)*K + fiber%K] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)(I*K);
+  }
+  else if (2 == mode) {
+    for (int fiber = 0; fiber < I*J; ++fiber) {
+      counter++;
+      for (int k = 0; k < K; ++k) {
+        if (x[fiber*K + k] > thre || x[fiber*K + k] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)(I*J);
+  }
+  else {
+    assert(false);
+  }
+  return sparsity;
+}
+
+template float
+caffe_cpu_fiber_sparsity(
+  const int I, const int J, const int K,
+  const float *x, int mode, float thre);
+template double
+caffe_cpu_fiber_sparsity(
+  const int I, const int J, const int K,
+  const double *x, int mode, double thre);
+
+template<typename Dtype>
+Dtype caffe_cpu_slice_sparsity(
+  const int I, const int J, const int K,
+  const Dtype *x, int mode, Dtype thre)
+{
+  Dtype sparsity = (Dtype)0;
+  int counter = 0;
+  if (0 == mode) {
+    for (int slice = 0; slice < I; ++slice) {
+      counter++;
+      for (int jk = 0; jk < J*K; ++jk) {
+        if (x[slice*J*K + jk] > thre || x[slice*J*K + jk] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)I;
+  }
+  else if (1 == mode) {
+    for (int slice = 0; slice < J; ++slice) {
+      counter++;
+      for (int ik = 0; ik < I*K; ++ik) {
+        if (x[((ik/K)*J + slice)*K + ik%K] > thre || x[((ik/K)*J + slice)*K + ik%K] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)J;
+  }
+  else if (2 == mode) {
+    for (int slice = 0; slice < K; ++slice) {
+      counter++;
+      for (int ij = 0; ij < I*J; ++ij) {
+        if (x[ij*K + slice] > thre || x[ij*K + slice] < -thre) {
+          --counter;
+          break;
+        }
+      }
+    }
+    sparsity = (Dtype)counter/(Dtype)K;
+  }
+  else {
+    assert(false);
+  }
+  return sparsity;
+}
+
+template float
+caffe_cpu_slice_sparsity(
+  const int I, const int J, const int K,
+  const float *x, int mode, float thre);
+template double
+caffe_cpu_slice_sparsity(
+  const int I, const int J, const int K,
+  const double *x, int mode, double thre);
+
 template <typename Dtype>
 Dtype caffe_cpu_group_sparsity(const int M, const int N, const Dtype *x, bool dimen){
 	Dtype sparsity = (Dtype)0;

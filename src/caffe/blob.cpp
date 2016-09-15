@@ -225,7 +225,7 @@ void Blob<Dtype>::Zerout() {
     //    static_cast<Dtype*>(data_->mutable_cpu_data()));
 	  data_ptr_tmp = static_cast<Dtype*>(data_->mutable_cpu_data());
 	  for(int i=0;i<count_;i++){
-		  if(data_ptr_tmp[i]<thre && data_ptr_tmp[i]>(-thre)){
+		  if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
 			  data_ptr_tmp[i]=0;
 		  }
 	  }
@@ -290,7 +290,7 @@ template <typename Dtype>
 Dtype Blob<Dtype>::GetSparsity(){
 	int zero_num = 0;
 	for(int i=0;i<this->count();i++){
-		if( this->cpu_data()[i]<ZEROUT_THRESHOLD && this->cpu_data()[i]>-ZEROUT_THRESHOLD){
+		if( this->cpu_data()[i]<=ZEROUT_THRESHOLD && this->cpu_data()[i]>=-ZEROUT_THRESHOLD){
 			zero_num++;
 		}
 	}
