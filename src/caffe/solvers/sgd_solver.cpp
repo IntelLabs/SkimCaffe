@@ -583,7 +583,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	sparsity_msg_stream << "    Element Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
 		//Dtype local_decay = weight_decay * net_params_weight_decay[param_id];
-    if (this->net_->learnable_params_[param_id]->num_axes() >= 2) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
 		  sparsity_msg_stream << GetSparsity(param_id) <<"\t";
     }
 		//if(local_decay) sparsity_msg_stream << GetSparsity(param_id) <<"\t";
@@ -594,7 +594,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	sparsity_msg_stream.str("");
 	sparsity_msg_stream << "     Winograd Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() >= 2) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
 		  sparsity_msg_stream << GetWinogradSparsity(param_id) <<"\t";
     }
 	}
@@ -606,7 +606,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	sparsity_msg_stream << "     Column Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
 		//Dtype local_decay = this->param_.kernel_shape_decay() * this->net_->params_kernel_shape_decay()[param_id];
-    if (this->net_->learnable_params_[param_id]->num_axes() >= 2) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
 		  sparsity_msg_stream << GetGroupSparsity(param_id, true) <<"\t";
     }
 		//if(local_decay) sparsity_msg_stream << GetGroupSparsity(param_id, true) <<"\t";
@@ -617,7 +617,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	sparsity_msg_stream.str("");
 	sparsity_msg_stream << "        Row Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() >= 2) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
 		  sparsity_msg_stream << GetGroupSparsity(param_id, false) <<"\t";
     }
 		//if(local_decay) sparsity_msg_stream << GetGroupSparsity(param_id, false) <<"\t";
@@ -628,7 +628,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	sparsity_msg_stream.str("");
 	sparsity_msg_stream << "      Block Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() >= 2) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
       const vector<BlockGroupLassoSpec> net_params_block_group_lasso =
                  this->net_->params_block_group_lasso()[param_id];
       for (int blk_idx=0;blk_idx<net_params_block_group_lasso.size();blk_idx++){
@@ -644,7 +644,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        OC-fiber Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetFiberSparsity(param_id, 0) <<"\t";
     }
   }
@@ -653,7 +653,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        IC-fiber Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetFiberSparsity(param_id, 1) <<"\t";
     }
   }
@@ -662,7 +662,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        kernel-fiber Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetFiberSparsity(param_id, 2) <<"\t";
     }
   }
@@ -671,7 +671,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        OC-slice Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetSliceSparsity(param_id, 0) <<"\t";
     }
   }
@@ -680,7 +680,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        IC-slice Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetSliceSparsity(param_id, 1) <<"\t";
     }
   }
@@ -689,7 +689,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        kernel-slice Sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    if (this->net_->learnable_params_[param_id]->num_axes() == 4) {
+    if (this->net_->learnable_params()[param_id]->num_axes() == 4) {
       sparsity_msg_stream << GetSliceSparsity(param_id, 2) <<"\t";
     }
   }
@@ -706,8 +706,8 @@ void SGDSolver<Dtype>::ApplyUpdate() {
     ComputeUpdateValue(param_id, rate);
   }
   //this->net_->Update();
-  for (int param_id = 0; param_id < this->net_->learnable_params_.size(); ++param_id) {
-    Blob<Dtype> *param = this->net_->learnable_params_[param_id];
+  for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
+    Blob<Dtype> *param = this->net_->learnable_params()[param_id];
     param->Update();
 
     // copied from blob::Zerout
@@ -842,7 +842,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
       default:
         LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
       }
-      //this->net_->learnable_params_[param_id]->Zerout();
+      //this->net_->learnable_params()[param_id]->Zerout();
     }
     else if (regularization_type == "L2") {
     }
@@ -1195,7 +1195,7 @@ void SGDSolver<Dtype>::PrintWinogradFiberSliceSparsity() {
   ostringstream sparsity_msg_stream;
   sparsity_msg_stream << "     Winograd fiber/slice sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    Blob<Dtype> *param = this->net_->learnable_params_[param_id]; 
+    Blob<Dtype> *param = this->net_->learnable_params()[param_id]; 
     if (param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
       int N = param->shape()[0];
       int C = param->shape()[1];
