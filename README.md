@@ -44,9 +44,16 @@ We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
 Direct sparse convolution and sparse fully-connected layers is only tested for AlexNet.
 More details on direct sparse convolution is described at: https://arxiv.org/abs/1608.01409
 
-1) compile SpMP:
+1) Set up Intel compiler environment (compilervars.sh or compilervars.csh)
+
+2) Compile SpMP:
 
 cd experiments/sparsity/SpMP
 make
 
-2) compile Caffe as usual with Intel compiler environment set up (compilervars.sh or compilervars.csh)
+3) Build Caffe as usual
+
+4) Test:
+
+bzip2 -d models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel.bz2
+build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv.prototxt -weights models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel -iterations 3
