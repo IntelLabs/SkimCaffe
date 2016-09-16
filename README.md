@@ -36,7 +36,7 @@ Please cite Caffe in your publications if it helps your research:
       Year = {2014}
     }
 
-## License and Citation
+## SkimCaffe Specific Description
 
 We assume you have a recent Intel compiler (tested with 16.x version) and MKL installed.
 We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
