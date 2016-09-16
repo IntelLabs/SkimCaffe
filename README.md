@@ -36,12 +36,16 @@ Please cite Caffe in your publications if it helps your research:
       Year = {2014}
     }
 
-SkimCaffe specific description:
+## License and Citation
 
 We assume you have a recent Intel compiler (tested with 16.x version) and MKL installed.
 We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
+Direct sparse convolution and sparse fully-connected layers is only tested for AlexNet.
+More details on direct sparse convolution is described at: https://arxiv.org/abs/1608.01409
 
 1) compile SpMP:
 
 cd experiments/sparsity/SpMP
 make
+
+2) compile Caffe as usual with Intel compiler environment set up (compilervars.sh or compilervars.csh)
