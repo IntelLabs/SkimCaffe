@@ -973,9 +973,13 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
         //      int kernel_w_aligned = (kernel_w + 7)/8*8;
         //      int kernel_size_aligned2 = (kernel_w_aligned*kernel_h + 15)/16*16;
         //      const float *weight = weight_aligned2_ + g*M*(conv_in_channels_/group_)*kernel_size_aligned2;
+        if (std::string(type()) != "ConvolutionReLUPoolLRN" && 0 == tid) {
+          LOG(FATAL) << "DIRECT_DCONV for 11x11 convolution only supported for ConvolutionReLUPoolLRN fused layer";
+#pragma omp barrier
+          return;
+        }
 
         const float *weight = weight_interleaved_;
-        assert(std::string(type()) == "ConvolutionReLUPoolLRN");
         caffe_cpu_dconv<float>(
             input + conv_in_channels_/group_ * g * height * width,
             conv_in_channels_, height, width,
@@ -1034,7 +1038,12 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 		  if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5 && dilation_h == 1 && dilation_w == 1) {
 		    // 2nd layer of AlexNet fused with bias term and pooling
 
-		    assert(std::string(type()) == "ConvolutionReLUPoolLRN");
+        if (std::string(type()) != "ConvolutionReLUPoolLRN" && 0 == tid) {
+          LOG(FATAL) << "DIRECT_SCONV for 5x5 convolution only supported for ConvolutionReLUPoolLRN fused layer";
+#pragma omp barrier
+          return;
+        }
+
         caffe_cpu_sconv<float>(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
             input + conv_in_channels_/group_ * g * height * width,
