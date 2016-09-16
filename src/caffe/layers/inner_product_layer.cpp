@@ -58,7 +58,7 @@ enum
   GEMM,
 };
 
-static int method = SPMDM_CSR;
+static int method = GEMM; //SPMDM_CSR;
 
 template<>
 void InnerProductLayer<double>::WeightAlign(){
