@@ -130,6 +130,10 @@ void LRNLayer<Dtype>::CrossChannelForward_cpu(
         4096,
         sizeof(Dtype) * omp_get_max_threads() * channels_ * height_ * width_);
   }
+
+  int mkl_max_threads_saved = mkl_get_max_threads();
+  mkl_set_num_threads(1);
+
 #pragma omp parallel
   {
     int tid = omp_get_thread_num();
@@ -184,6 +188,8 @@ void LRNLayer<Dtype>::CrossChannelForward_cpu(
       caffe_mul<Dtype>(channels_ * height_ * width_, scale_data, bottom_data + offset, top_data + offset);
     }
   } // omp parallel
+
+  mkl_set_num_threads(mkl_max_threads_saved);
 }
 
 template <typename Dtype>
