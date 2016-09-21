@@ -323,8 +323,8 @@ ifeq ($(DEBUG), 1)
 	NVCCFLAGS += -G
 else
 	COMMON_FLAGS += -DNDEBUG -O3
-	CXXFLAGS += -xHost
 endif
+CXXFLAGS += -xHost
 
 # cuDNN acceleration configuration.
 ifeq ($(USE_CUDNN), 1)
