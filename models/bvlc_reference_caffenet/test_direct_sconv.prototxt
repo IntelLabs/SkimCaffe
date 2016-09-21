@@ -55,7 +55,7 @@ layer {
 }
 layer {
   name: "conv1"
-  type: "Convolution"
+  type: "ConvolutionReLUPoolLRN"
   bottom: "data"
   top: "conv1"
   param {
@@ -78,30 +78,13 @@ layer {
       type: "constant"
       value: 0
     }
+    conv_mode: DIRECT_DCONV
   }
-}
-layer {
-  name: "relu1"
-  type: "ReLU"
-  bottom: "conv1"
-  top: "conv1"
-}
-layer {
-  name: "pool1"
-  type: "Pooling"
-  bottom: "conv1"
-  top: "pool1"
   pooling_param {
     pool: MAX
     kernel_size: 3
     stride: 2
   }
-}
-layer {
-  name: "norm1"
-  type: "LRN"
-  bottom: "pool1"
-  top: "norm1"
   lrn_param {
     local_size: 5
     alpha: 0.0001
@@ -111,7 +94,7 @@ layer {
 layer {
   name: "conv2"
   type: "ConvolutionReLUPoolLRN"
-  bottom: "norm1"
+  bottom: "conv1"
   top: "conv2"
   param {
     lr_mult: 1
