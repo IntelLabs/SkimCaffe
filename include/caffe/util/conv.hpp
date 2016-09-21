@@ -32,9 +32,10 @@ extern synk::Barrier *barriers[256];
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, pool_cycle;
 
-static int get_col_major_ic_block(int nnz, int m, int n) {
-  // # of ics to have on average 8 non-zeros per oc
-  return std::max(8, 1 << (int)round(log2(8/((double)nnz/m/n))));
+static int get_col_major_ic_block(int nnz, int num_out_channels, int num_in_channels) {
+  // # of in-channels to have on average 8 non-zeros per out-channel
+  double nnz_per_oc_and_ic = (double)nnz/num_out_channels/num_in_channels;
+  return std::max(8, 1 << (int)round(log2(std::max(1., 8/nnz_per_oc_and_ic))));
 }
 
 extern int flop_cnt;
