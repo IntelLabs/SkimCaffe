@@ -49,17 +49,6 @@ InnerProductLayer<Dtype>::~InnerProductLayer()
   free(weight_i_blocked_);
 }
 
-enum
-{
-  SPGEMM_CSR,
-  SPGEMM_CSC,
-  SPMDM_CSR,
-  SPMDM_CSC,
-  GEMM,
-};
-
-static int method = GEMM; //SPMDM_CSR;
-
 template<>
 void InnerProductLayer<double>::WeightAlign(){
   NOT_IMPLEMENTED;
@@ -80,65 +69,67 @@ void InnerProductLayer<float>::WeightAlign(){
 	posix_memalign((void **)&B_temp_global_, 4096, sizeof(float)*omp_get_max_threads()*4096);
 	posix_memalign((void **)&C_temp_global_, 4096, sizeof(float)*omp_get_max_threads()*4096);
 
-  MKL_INT job[] = {
-      0 /*dense->CSR*/,
-      0 /*0-based indexing in dense matrix */,
-      0 /*1-based CSR*/,
-      2 /* whole matrix*/,
-      K_*N_, /* nzmax */
-      1 /* generate a, i, and j */
-  };
-  MKL_INT info;
-  if (SPMDM_CSR == method && !transpose_) {
+	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
+
+  if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode) {
+    if (!transpose_) {
+      int ncolblocks = K_/col_block_size;
+      posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*ncolblocks + 1));
+      posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
+      posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
+
+      weight_i_blocked_[0] = 0;
+      int nnz = 0;
+      for (int cb = 0; cb < ncolblocks; ++cb) {
+        for (int i = 0; i < N_; ++i) {
+          for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
+            float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
+            if (v != 0) {
+              weight_j_blocked_[nnz] = M_*j;
+              weight_values_blocked_[nnz] = v;
+              ++nnz;
+            }
+          }
+          weight_i_blocked_[cb*N_ + i + 1] = nnz;
+        }
+      }
+    }
+    else {
+      LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";
+    }
+  }
+  else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
+    LOG(WARNING) << "SPGEMM mode is not supported yet";
+
+    MKL_INT job[] = {
+        0 /*dense->CSR*/,
+        0 /*0-based indexing in dense matrix */,
+        0 /*1-based CSR*/,
+        2 /* whole matrix*/,
+        K_*N_, /* nzmax */
+        1 /* generate a, i, and j */
+    };
+    MKL_INT info;
+
     int m = transpose_ ? K_ : N_;
     int n = transpose_ ? N_ : K_;
 
-    int ncolblocks = K_/col_block_size;
-    posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*ncolblocks + 1));
-    posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
-    posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
-
-    weight_i_blocked_[0] = 0;
-    int nnz = 0;
-    for (int cb = 0; cb < ncolblocks; ++cb) {
-      for (int i = 0; i < N_; ++i) {
-        for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-          float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-          if (v != 0) {
-            weight_j_blocked_[nnz] = M_*j;
-            weight_values_blocked_[nnz] = v;
-            ++nnz;
-          }
-        }
-        weight_i_blocked_[cb*N_ + i + 1] = nnz;
-      }
+    if (transpose_) {
+      mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
     }
-  }
-  else if (SPGEMM_CSR == method && transpose_ || SPGEMM_CSC == method && !transpose_) {
-	  int m = transpose_ ? K_ : N_;
-	  int n = transpose_ ? N_ : K_;
-	  mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
-	  if(info) {
-	    LOG(FATAL)<<"The routine is interrupted processing the "<<
-	        info<<"-th row "
-	        <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-	  }
-	}
-	else if (SPGEMM_CSR == method && !transpose_ || SPGEMM_CSC == method && transpose_) {
-	  int m = transpose_ ? K_ : N_;
-	  int n = transpose_ ? N_ : K_;
-
-    float *weight_transposed;
-    posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
-    mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
-    mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
+    else {
+      float *weight_transposed;
+      posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
+      mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
+      mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
+      free(weight_transposed);
+    }
     if(info) {
       LOG(FATAL)<<"The routine is interrupted processing the "<<
           info<<"-th row "
           <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
     }
-    free(weight_transposed);
-	}
+  }
 
   posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
   posix_memalign((void **)&bottom_j_, 4096, sizeof(int)*M_*K_);
@@ -257,24 +248,19 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     LOG(INFO) << this->layer_param_.name() << " M " << M_ << " K " << K_ << " N " << N_ << " sparsity " << (double)cnt/(M_*K_);
   }
 
-  MKL_INT job[] = {
-      0 /*dense->CSR*/,
-      0 /*0-based indexing in dense matrix */,
-      0 /*0-based CSR*/,
-      2 /* whole matrix*/,
-      M_*K_, /* nzmax */
-      1 /* generate a, i, and j */
-  };
-  MKL_INT info;
+  const LayerParameter& layerparam = this->layer_param();
+  caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
-  if (SPMDM_CSR == method) {
-//    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+  if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
+    if (layerparam.inner_product_param().spmdm_transpose_in()) {
+      mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+    }
 
     int ncolblocks = K_/col_block_size;
     double t = omp_get_wtime();
     csrmm(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        bottom_data,
+        layerparam.inner_product_param().spmdm_transpose_in() ? bottom_transposed_ : bottom_data,
         top_data,
         N_, M_, K_,
         this->blobs_[1]->cpu_data(),
@@ -282,8 +268,10 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[ncolblocks*N_]*M_/t/1e9;
 
-    memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+    if (layerparam.inner_product_param().spmdm_transpose_out()) {
+      memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
+      mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+    }
 
     std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {
@@ -294,7 +282,7 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     total_conv_flops[name] += 2.*M_*K_*N_;
     total_files += M_;
   }
-  else if (SPGEMM_CSR == method) {
+  else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
     float *A = layer2bottom["fc6"];
 
     CSR B = layer2weight["fc6"];
@@ -302,18 +290,6 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
 
     float *B_bias = layer2bias["fc6"];
     float *C_bias = layer2bias["fc7"];
-
-//    caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
-//        M_, N_, K_, (float)1.,
-//        bottom_data, weight, (float)0., top_data);
-//
-//    if (bias_term_) {
-//      // JSP: common path for AlexNet
-//      caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
-//          bias_multiplier_.cpu_data(),
-//          this->blobs_[1]->cpu_data(), (float)1., top_data);
-//    }
-//    printf("%s %g\n", this->layer_param_.name().c_str(), top_data[123*N_ + 123]);
 
     int flops = csrmultd_fused_flops(
         A,
@@ -357,101 +333,9 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     t = omp_get_wtime() - t;
 
     LOG(INFO) << "fused_spgemm takes " << t << " GF/s= " << (double)flops/t/1e9 << " flop-sparsity " << 1 - (double)flops/(2.*(M_*B.m*B.n + M_*C.m*C.n + M_*K_*N_));
-
-//    printf("E[123][123] = %g\n", top_data[123*N_ + 123]);
-
-//    mkl_sdnscsr(job, &M_, &K_, bottom_data, &K_, bottom_values_, bottom_j_, bottom_i_, &info);
-//    if(info) {
-//      LOG(FATAL)<<"The routine is interrupted processing the "<<
-//          info<<"-th row "
-//          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-//    }
-//
-//    char transa = 'N';
-//    MKL_INT request = 0; // output pre-allocated
-//    MKL_INT sort = 0; // sort output
-//    MKL_INT nzmax = M_*N_;
-//    MKL_INT info;
-//
-//    mkl_scsrmultcsr(
-//        &transa, &request, &sort, &M_, &K_, &N_,
-//        bottom_values_, bottom_j_, bottom_i_,
-//        weight_values_, weight_j_, weight_i_,
-//        top_values_, top_j_, top_i_,
-//        &nzmax, &info);
-//    if(info) {
-//      LOG(FATAL)<<"The routine is interrupted processing the "<<
-//          info<<"-th row "
-//          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-//    }
-//
-//    caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
-//        M_, N_, K_, (float)1.,
-//        bottom_data, weight, (float)0., top_data);
-//
-////    memset(top_data, 0, sizeof(float)*M_*N_);
-//    for (int i = 0; i < M_; ++i) {
-//      for (int j = top_i_[i] - 1; j < top_i_[i + 1] - 1; ++j) {
-//        float expected = top_data[i*N_ + top_j_[j] - 1];
-//        float actual = top_values_[j];
-//        float expected2 = 0;
-//        for (int k = 0; k < K_; ++k) {
-//          expected2 += bottom_data[i*K_ + k]*weight[k*N_ + top_j_[j] - 1];
-//        }
-//        if (fabs(expected - actual)/fabs(expected) > 0.1 && fabs(expected) > 1e-4 && fabs(actual) > 1e-4) {
-//          LOG(FATAL) << "expected " << expected << " actual " << actual;
-//        }
-//      }
-//    }
-//
-////    job[0] = 1; /* CSR->dense */
-////    job[4] = M_*N_;
-////    mkl_sdnscsr(job, &M_, &N_, top_data, &N_, top_values_, top_j_, top_i_, &info);
-////    if(info) {
-////      LOG(FATAL)<<"The routine is interrupted processing the "<<
-////          info<<"-th row "
-////          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-////    }
-  }
-  else if (SPGEMM_CSC == method) {
-    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
-    mkl_sdnscsr(job, &K_, &M_, bottom_transposed_, &M_, bottom_values_, bottom_j_, bottom_i_, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-
-    char transa = 'N';
-    MKL_INT request = 0; // output pre-allocated
-    MKL_INT sort = 0; // sort output
-    MKL_INT nzmax = M_*N_;
-    MKL_INT info;
-
-    mkl_scsrmultcsr(
-        &transa, &request, &sort, &N_, &K_, &M_,
-        weight_values_, weight_j_, weight_i_,
-        bottom_values_, bottom_j_, bottom_i_,
-        top_values_, top_j_, top_i_,
-        &nzmax, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-
-    job[0] = 1; /* CSR->dense */
-    job[4] = M_*N_;
-    mkl_sdnscsr(job, &N_, &M_, bottom_transposed_, &M_, top_values_, top_j_, top_i_, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
   }
   else {
-    assert(GEMM == method);
+    // activation_matrix * weight_matrix^T
     caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
         M_, N_, K_, (float)1.,
         bottom_data, weight, (float)0., top_data);

@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "../../include/caffe/util/conv.hpp"
+#define CSRMM_REARRANGE_B
 #include "../../include/caffe/util/spgemm.hpp"
 #include "SpMP/CSR.hpp"
 #include <mkl.h>
@@ -279,7 +280,7 @@ int main(int argc, const char *argv[])
         output,
         NOUT, NBATCH, NIN,
         bias,
-        num_of_C_row_partitions, num_of_C_col_partitions,
+        num_of_C_col_partitions,
         num_of_A_col_blocks);
 #endif
 
@@ -308,7 +309,7 @@ int main(int argc, const char *argv[])
 
   // Re-arrange output matrix C
   // In csrmm_fused_C_decomposed, each thread writes to the contiguous locations for spatial locality
-  // which is not necessarily match with the original layout of output matarix C.
+  // which is not necessarily match with the original layout of output matrix C.
   float *temp_output = new float[NOUT*NIN];
   int i_per_block = (NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions;
   int j_per_block = (NBATCH + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
@@ -365,7 +366,7 @@ int main(int argc, const char *argv[])
   for (int j = A->rowptr[ROW_TO_DEBUG]; j < A->rowptr[ROW_TO_DEBUG + 1]; ++j) {
     float w = temp_values[j];
     int off = A->colidx[j];
-    printf(" + %g*%d:%g ", w, off, input[off*NBATCH + COL_TO_DEBUG]);
+    printf(" + %g*%d:%g", w, off, input[off*NBATCH + COL_TO_DEBUG]);
     sum += w*input[off*NBATCH + COL_TO_DEBUG];
   }
   printf(" = %g\n", sum);
@@ -373,8 +374,10 @@ int main(int argc, const char *argv[])
 
   for (int i = 0; i < NOUT; ++i) {
     for (int j = 0; j < NBATCH; ++j) {
-      if (fabs(output_ref[i*NBATCH + j] - output[i*NBATCH + j])/fabs(output_ref[i*NBATCH + j]) > 1e-1) {
-        printf("(%d, %d) expected %g actual %g\n", i, j, output_ref[i*NBATCH + j], output[i*NBATCH + j]);
+      float expected = output_ref[i*NBATCH + j];
+      float actual = output[i*NBATCH + j];
+      if (fabs(expected - actual)/fabs(expected) > 1e-1) {
+        printf("(%d, %d) expected %g actual %g\n", i, j, expected, actual);
         return -1;
       }
     }

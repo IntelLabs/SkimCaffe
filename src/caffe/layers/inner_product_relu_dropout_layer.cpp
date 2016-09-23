@@ -55,17 +55,6 @@ InnerProductReLUDropoutLayer<Dtype>::~InnerProductReLUDropoutLayer()
   free(weight_i_blocked_);
 }
 
-enum
-{
-  SPGEMM_CSR,
-  SPGEMM_CSC,
-  SPMDM_CSR,
-  SPMDM_CSC,
-  GEMM,
-};
-
-static int method = GEMM; // SPMDM_CSR;
-
 template<>
 void InnerProductReLUDropoutLayer<double>::WeightAlign(){
   NOT_IMPLEMENTED;
@@ -92,96 +81,134 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	csr.rowptr = weight_i_;
 	csr.colidx = weight_j_;
 
-  MKL_INT job[] = {
-      0 /*dense->CSR*/,
-      0 /*0-based indexing in dense matrix */,
-      0 /*0-based CSR*/,
-      2 /* whole matrix*/,
-      K_*N_, /* nzmax */
-      1 /* generate a, i, and j */
-  };
-  MKL_INT info;
-  if (SPMDM_CSR == method && !transpose_) {
-    int m = transpose_ ? K_ : N_;
-    int n = transpose_ ? N_ : K_;
+  caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
-    int ncolblocks = K_/col_block_size;
-    posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*ncolblocks + 1));
-    posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
-    posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
+  if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode) {
+    if (!transpose_) {
+      if (this->layer_param_.relu_param().negative_slope() != 0) {
+        LOG(FATAL) << "InnerProduct layer fused with ReLU in SPMDM mode only works with ReLU using 0 negative slop";
+      }
+      if (M_%(VLEN*CSRMM_REG_BLOCK_SIZE) != 0) {
+        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires batch size to be a multiple of " << VLEN*CSRMM_REG_BLOCK_SIZE;
+      }
+      int num_of_C_col_partitions = 1; // M_/(VLEN*CSRMM_REG_BLOCK_SIZE);
+        // TODO: num_of_C_col_partitions is currently fixed to 1
+        // To use num_of_C_col_partitions > 1, we need to rearrange output matrix after SpMDM
+      if (omp_get_max_threads()%num_of_C_col_partitions != 0) {
+        LOG(WARNING) << "InnerProductReLUDropoutLayer in SPMDM mode performs best when num of threads is a multiple of " << num_of_C_col_partitions;
+      }
+      if (omp_get_max_threads() < num_of_C_col_partitions != 0) {
+        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires num of threads should not be less than " << num_of_C_col_partitions;
+      }
 
-    weight_i_blocked_[0] = 0;
-    int nnz = 0;
-    int nthreads = omp_get_max_threads();
-    int i_per_thread = (N_ + nthreads - 1)/nthreads;
-    for (int tid = 0; tid < nthreads; ++tid) {
-      int ibegin = std::min(i_per_thread*tid, N_);
-      int iend = std::min(ibegin + i_per_thread, N_);
-      for (int cb = 0; cb < ncolblocks; ++cb) {
-        for (int i = ibegin; i < iend; ++i) {
-          for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-            float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-            if (v != 0) {
-              weight_j_blocked_[nnz] = M_*j;
-              weight_values_blocked_[nnz] = v;
-              ++nnz;
+      int num_of_A_col_blocks = K_/col_block_size;
+      posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*num_of_A_col_blocks + 1));
+      posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
+      posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
+
+      weight_i_blocked_[0] = 0;
+      int nnz = 0;
+      int nthreads = omp_get_max_threads()/num_of_C_col_partitions*num_of_C_col_partitions;
+      int i_per_thread = (N_ + nthreads - 1)/nthreads;
+      for (int tid = 0; tid < nthreads; ++tid) {
+        int ibegin = std::min(i_per_thread*tid, N_);
+        int iend = std::min(ibegin + i_per_thread, N_);
+        for (int cb = 0; cb < num_of_A_col_blocks; ++cb) {
+          for (int i = ibegin; i < iend; ++i) {
+            for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
+              float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
+              if (v != 0) {
+                weight_j_blocked_[nnz] = M_*j; // pre-multiply column index with the width of dense matrix to be multipled with
+                weight_values_blocked_[nnz] = v;
+                ++nnz;
+              }
             }
+            weight_i_blocked_[num_of_A_col_blocks*ibegin + cb*(iend - ibegin) + (i - ibegin) + 1] = nnz;
           }
-          weight_i_blocked_[ncolblocks*ibegin + cb*(iend - ibegin) + (i - ibegin) + 1] = nnz;
         }
       }
+
+      csr.m = N_;
+      csr.n = K_;
+
+      SpMP::CSR A(csr.m, csr.n, nnz);
+      nnz = 0;
+      A.rowptr[0] = 0;
+      for (int i = 0; i < N_; ++i) {
+        for (int j = 0; j < K_; ++j) {
+          float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
+          if (v != 0) {
+            A.colidx[nnz] = j;
+            A.values[nnz] = v;
+            ++nnz;
+          }
+        }
+        A.rowptr[i + 1] = nnz;
+      }
+
+      SpMP::CSR *AT = A.transpose();
+      int *rowPerm = new int[csr.m], *rowInversePerm = new int[csr.m];
+      int *colPerm = new int[csr.n], *colInversePerm = new int[csr.n];
+      bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
+      FREE(A.diagptr);
+      SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
+      SpMP::CSR *ATReordered = AReordered->transpose();
+
+  //    A.storeMatrixMarket((layerparam.name() + ".mtx").c_str());
+
+      LOG(INFO) << "Average width of " << csr.m << " x " << csr.n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
+      LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
+
+      delete[] rowPerm;
+      delete[] rowInversePerm;
+      delete[] colPerm;
+      delete[] colInversePerm;
+      delete AT;
+      delete AReordered;
+      delete ATReordered;
+    }
+    else {
+      LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";
+    }
+  }
+  else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
+    LOG(WARNING) << "SPGEMM mode is not supported yet";
+    if (this->layer_param_.relu_param().negative_slope() != 0) {
+      LOG(FATAL) << "SPGEMM mode only works with ReLU using 0 negative slop";
+    }
+
+    MKL_INT job[] = {
+        0 /*dense->CSR*/,
+        0 /*0-based indexing in dense matrix */,
+        0 /*0-based CSR*/,
+        2 /* whole matrix*/,
+        K_*N_, /* nzmax */
+        1 /* generate a, i, and j */
+    };
+    MKL_INT info;
+
+	  int m = transpose_ ? K_ : N_;
+	  int n = transpose_ ? N_ : K_;
+
+	  if (transpose_) {
+      mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
+	  }
+	  else {
+      float *weight_transposed;
+      posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
+      mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
+      mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
+      free(weight_transposed);
+	  }
+
+    if(info) {
+      LOG(FATAL)<<"The routine is interrupted processing the "<<
+          info<<"-th row "
+          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
     }
 
     csr.m = m;
     csr.n = n;
-
-    SpMP::CSR A(m, n, nnz);
-    nnz = 0;
-    A.rowptr[0] = 0;
-    for (int i = 0; i < N_; ++i) {
-      for (int j = 0; j < K_; ++j) {
-        float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-        if (v != 0) {
-          A.colidx[nnz] = j;
-          A.values[nnz] = v;
-          ++nnz;
-        }
-      }
-      A.rowptr[i + 1] = nnz;
-    }
-
-    SpMP::CSR *AT = A.transpose();
-    int *rowPerm = new int[m], *rowInversePerm = new int[m];
-    int *colPerm = new int[n], *colInversePerm = new int[n];
-    bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
-    FREE(A.diagptr);
-    SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
-    SpMP::CSR *ATReordered = AReordered->transpose();
-
-//    A.storeMatrixMarket((layerparam.name() + ".mtx").c_str());
-
-    LOG(INFO) << "Average width of " << m << " x " << n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
-    LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
-
-    delete[] rowPerm;
-    delete[] rowInversePerm;
-    delete[] colPerm;
-    delete[] colInversePerm;
-    delete AT;
-    delete AReordered;
-    delete ATReordered;
-  }
-  else if (SPGEMM_CSR == method && transpose_ || SPGEMM_CSC == method && !transpose_) {
-	  int m = transpose_ ? K_ : N_;
-	  int n = transpose_ ? N_ : K_;
-	  mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
-	  if(info) {
-	    LOG(FATAL)<<"The routine is interrupted processing the "<<
-	        info<<"-th row "
-	        <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-	  }
-	  csr.m = m;
-	  csr.n = n;
 
     SpMP::CSR A(m, n, weight_i_[m]);
     for (int i = 0; i <= m; ++i) {
@@ -210,55 +237,13 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
     delete AReordered;
     delete ATReordered;
 	}
-	else if (SPGEMM_CSR == method && !transpose_ || SPGEMM_CSC == method && transpose_) {
-	  int m = transpose_ ? K_ : N_;
-	  int n = transpose_ ? N_ : K_;
 
-    float *weight_transposed;
-    posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
-    mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
-    mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-    free(weight_transposed);
-    csr.m = n;
-    csr.n = m;
-
-    SpMP::CSR A(n, m, weight_i_[n]);
-    for (int i = 0; i <= n; ++i) {
-      A.rowptr[i] = weight_i_[i];
-    }
-    for (int i = 0; i < weight_i_[n]; ++i) {
-      A.colidx[i] = weight_j_[i];
-    }
-
-    SpMP::CSR *AT = A.transpose();
-    int *rowPerm = new int[n], *rowInversePerm = new int[n];
-    int *colPerm = new int[m], *colInversePerm = new int[m];
-    bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
-    FREE(A.diagptr);
-    SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
-    SpMP::CSR *ATReordered = AReordered->transpose();
-
-    LOG(INFO) << "Average width of " << n << " x " << m << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
-    LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
-
-    delete[] rowPerm;
-    delete[] rowInversePerm;
-    delete[] colPerm;
-    delete[] colInversePerm;
-    delete AT;
-    delete AReordered;
-    delete ATReordered;
-	}
-
+  // save weights in sparse matrix format and bias so that fc8 can do fused SpGEMM
+  // experimental implementation only works for AlexNet and when fc8 also uses SPGEMM mode
   layer2weight[layerparam.name()] = csr;
   layer2bias[layerparam.name()] = this->blobs_[1]->mutable_cpu_data();
 
-  posix_memalign((void **)&spgemm_buf_, 4096, sizeof(float)*omp_get_max_threads()*(SPGEMM_CSR == method ? N_ : M_));
+  posix_memalign((void **)&spgemm_buf_, 4096, sizeof(float)*omp_get_max_threads()*N_);
 
   posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
   posix_memalign((void **)&bottom_j_, 4096, sizeof(int)*M_*K_);
@@ -380,38 +365,34 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     LOG(INFO) << this->layer_param_.name() << " M " << M_ << " K " << K_ << " N " << N_ << " sparsity " << (double)cnt/(M_*K_);
   }
 
-  MKL_INT job[] = {
-      0 /*dense->CSR*/,
-      0 /*0-based indexing in dense matrix */,
-      0 /*0-based CSR*/,
-      2 /* whole matrix*/,
-      M_*K_, /* nzmax */
-      1 /* generate a, i, and j */
-  };
-  MKL_INT info;
+  const LayerParameter& layerparam = this->layer_param();
+  caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
-#if 0
-  if (SPMDM_CSR == method) {
-    std::string name(this->layer_param_.name());
-    if (name == "fc6") {
+  if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
+    if (layerparam.inner_product_param().spmdm_transpose_in()) {
       mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
     }
 
-    int ncolblocks = K_/col_block_size;
+    int num_of_A_col_blocks = K_/col_block_size;
+    int num_of_C_col_partitions = 1; //M_/(VLEN*CSRMM_REG_BLOCK_SIZE);
     double t = omp_get_wtime();
-    csrmm_fused(
+    csrmm_fused_C_decomposed(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        name == "fc6" ? bottom_transposed_ : bottom_data,
+        layerparam.inner_product_param().spmdm_transpose_in() ? bottom_transposed_ : bottom_data,
         top_data,
         N_, M_, K_,
         this->blobs_[1]->cpu_data(),
-        col_block_size);
+        num_of_C_col_partitions,
+        num_of_A_col_blocks);
     t = omp_get_wtime() - t;
-    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[ncolblocks*N_]*M_/t/1e9;
+    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[num_of_A_col_blocks*N_]*M_/t/1e9;
 
-//    memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-//    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+    if (layerparam.inner_product_param().spmdm_transpose_out()) {
+      memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
+      mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+    }
 
+    std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {
       total_conv_cycles[name] = 0;
       total_conv_flops[name] = 0;
@@ -420,8 +401,16 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     total_conv_flops[name] += 2.*M_*K_*N_;
     total_files += M_;
   }
-  else if (SPGEMM_CSR == method) {
-    assert(this->layer_param_.relu_param().negative_slope() == 0);
+  else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
+    MKL_INT job[] = {
+        0 /*dense->CSR*/,
+        0 /*0-based indexing in dense matrix */,
+        0 /*0-based CSR*/,
+        2 /* whole matrix*/,
+        M_*K_, /* nzmax */
+        1 /* generate a, i, and j */
+    };
+    MKL_INT info;
 
     mkl_sdnscsr(job, &M_, &K_, bottom_data, &K_, bottom_values_, bottom_j_, bottom_i_, &info);
     if(info) {
@@ -436,7 +425,7 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
         M_);
     LOG(INFO) << "flop-sparsity " << 1 - (double)flops/(2.*M_*N_*K_);
 
-//    return; // fused with fc8
+//    return; // uncomment this line when using fused SpGEMM in fc8 for AlexNet
 
     int nnz;
     double t = omp_get_wtime();
@@ -445,62 +434,13 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
         weight_values_, weight_j_, weight_i_,
         this->blobs_[1]->cpu_data(),
         top_data,
-//        top_values_, top_j_, top_i_, &nnz,
-        M_, N_/*, spgemm_buf_*/);
+        M_, N_);
 
     t = omp_get_wtime() - t;
     LOG(INFO) << "spgemm takes " << t << " GF/s= " << (double)flops/t/1e9 << " nnz-sparsity " << 1 - (double)nnz/(M_*N_);
-
-//#pragma omp parallel for
-//    for (int i = 0; i < M_; ++i) {
-//      for (int j = 0; j < N_; ++j) {
-//        top_data[i*N_ + j] = 0;
-//      }
-//      for (int j = top_i_[i]; j < top_i_[i + 1]; ++j) {
-//        top_data[i*N_ + top_j_[j]] = top_values_[j];
-//      }
-//    }
-  }
-  else if (SPGEMM_CSC == method) {
-    mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
-    mkl_sdnscsr(job, &K_, &M_, bottom_transposed_, &M_, bottom_values_, bottom_j_, bottom_i_, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-
-    int flops = spgemm_flops(
-        weight_values_, weight_j_, weight_i_,
-        bottom_values_, bottom_j_, bottom_i_,
-        N_);
-
-    int nnz;
-    double t = omp_get_wtime();
-    csrmultd_csc(
-        weight_values_, weight_j_, weight_i_,
-        bottom_values_, bottom_j_, bottom_i_,
-        this->blobs_[1]->cpu_data(), // FIXME - should access bias differently
-        bottom_transposed_,
-        N_, M_);
-    LOG(INFO) << "spgemm takes " << omp_get_wtime() - t << " nnz-sparsity " << 1 - (double)nnz/(M_*N_) << " flop-sparsity " << 1 - (double)flops/(2.*M_*N_*K_);
-
-    mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
-
-//#pragma omp parallel for
-//    for (int i = 0; i < N_; ++i) {
-//      for (int j = 0; j < M_; ++j) {
-//        top_data[j*N_ + i] = 0;
-//      }
-//      for (int j = top_i_[i]; j < top_i_[i + 1]; ++j) {
-//        top_data[top_j_[j]*N_ + i] = top_values_[j];
-//      }
-//    }
   }
   else
-#endif
   {
-    assert(GEMM == method);
     caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
         M_, N_, K_, (float)1.,
         bottom_data, weight, (float)0., top_data);

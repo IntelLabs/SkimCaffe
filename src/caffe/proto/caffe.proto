@@ -838,6 +838,22 @@ message InnerProductParameter {
   // of the weight matrix. The weight matrix itself is not going to be transposed
   // but rather the transfer flag of operations will be toggled accordingly.
   optional bool transpose = 6 [default = false];
+  
+  enum GemmMode {
+    GEMM = 0;   //gemm on lowered tensors
+    SPMDM = 1;  //sparse matrix (weights in CSR) times dense matrix (activation) multiplication
+    SPGEMM = 2; //sparse matrix (weights in CSR) times sparse matrix (activation in CSR) multiplication
+  }
+  
+  optional GemmMode gemm_mode = 7 [default = GEMM];
+  
+  // Only meaningful for SPMDM
+  // For efficient SPMDM, we need to transpose input and output dense matrices.
+  // To minimize transpose overhead, when we have a series of InnerProduct layers,
+  // we can transpose input only for the first layer of the series, and
+  // transpose output only for the last layer of the series
+  optional bool spmdm_transpose_in = 8 [default = true];
+  optional bool spmdm_transpose_out = 9 [default = true];
 }
 
 message InputParameter {

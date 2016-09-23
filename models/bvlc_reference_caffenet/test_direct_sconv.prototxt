@@ -49,7 +49,7 @@ layer {
 #  }
   data_param {
     source: "examples/imagenet/ilsvrc12_val_lmdb"
-    batch_size: 64
+    batch_size: 64 # batch size should be a multiple of 64 to use SPMDM mode in InnerProduct layers
     backend: LMDB
   }
 }
@@ -78,7 +78,7 @@ layer {
       type: "constant"
       value: 0
     }
-    conv_mode: DIRECT_DCONV
+    conv_mode: DIRECT_DCONV # direct dense convolution w/o lowering
   }
   pooling_param {
     pool: MAX
@@ -117,7 +117,7 @@ layer {
       type: "constant"
       value: 1
     }
-    conv_mode: DIRECT_SCONV
+    conv_mode: DIRECT_SCONV # direct sparse convolution
   }
   pooling_param {
     pool: MAX
@@ -243,6 +243,8 @@ layer {
       type: "constant"
       value: 1
     }
+    gemm_mode: SPMDM # sparse weight matrix times dense activation matrix 
+    spmdm_transpose_out: false # skip transpose of output required for SPMDM because the next layer is also InnerProduct with SPMDM
   }
   dropout_param {
     dropout_ratio: 0.5
@@ -271,6 +273,8 @@ layer {
       type: "constant"
       value: 1
     }
+    gemm_mode: SPMDM
+    spmdm_transpose_in: false # skip transpose of input required for SPMDM because the previous layer is also InnerProduct with SPMDM
   }
   dropout_param {
     dropout_ratio: 0.5
@@ -299,6 +303,7 @@ layer {
       type: "constant"
       value: 0
     }
+    # gemm_mode: SPMDM # Don't have enough sparsity in fc8 yet, but will have enough soon.
   }
 }
 layer {

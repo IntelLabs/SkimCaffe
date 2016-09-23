@@ -313,6 +313,8 @@ static void csrmultd_csc(
 
 extern synk::Barrier *barriers[256];
 
+// Compute sparse matrix times dense matrix fused with ReLU
+//
 // C = A*B, A is m*K, B is K*n matrices
 // in fc6 of AlexNet, A is 4K*9K = 144 MB (in dense) and B is 4K*256 = 9 MB.
 // In KNL, assuming 64 threads, each thread works on 64*9K = 2.25 MB.
@@ -576,7 +578,9 @@ static void __attribute__((noinline)) csrmm_fused_B_decomposed(
 #define CSRMM_REG_BLOCK_SIZE (8)
 #endif
 
-// 2D-decomposition of matrix C
+// Compute sparse matrix times dense matrix fused with ReLU
+//
+// Use 2D-decomposition of matrix C
 // Compute C = A*B, A is M*K, B is K*N matrices
 // in fc6 of AlexNet, A is 4K*9K*4B = 144MB in dense and 28.8MB in sparse assuming sparsity p = 0.1,
 // and B is 4K*256*4B = 9MB and C is 4MB.
@@ -593,6 +597,8 @@ static void __attribute__((noinline)) csrmm_fused_B_decomposed(
 // FLOP/Byte = 7 which is bandwidth bound
 //
 // Since A and B don't fit in L2$ of KNL, we block columns of A
+//
+// assumptions: omp_get_num_threads()%num_of_C_col_partitions == 0
 
 //#define DBG_CSRMM
 #ifdef DBG_CSRMM
@@ -600,20 +606,23 @@ static void __attribute__((noinline)) csrmm_fused_B_decomposed(
 #define COL_TO_DEBUG (17)
 #endif
 
-static void __attribute__((noinline)) csrmm_fused_C_decomposed(
+static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
     const float *A_data, const int *A_j, const int *A_i,
     const float *B,
     float *C,
     int M, int N, int K,
     const float *bias,
-    int num_of_C_row_partitions, int num_of_C_col_partitions,
+    int num_of_C_col_partitions,
     int num_of_A_col_blocks)
 {
-#pragma omp parallel
+  int nthreads = omp_get_max_threads()/num_of_C_col_partitions*num_of_C_col_partitions;
+
+#pragma omp parallel num_threads(nthreads)
   {
     unsigned long long t = __rdtsc();
 
-    int nthreads = omp_get_num_threads();
+    assert(nthreads%num_of_C_col_partitions == 0);
+    int num_of_C_row_partitions = nthreads/num_of_C_col_partitions;
     int tid = omp_get_thread_num();
 
     // threads are arranged in row-major way
@@ -632,10 +641,10 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
 
 #undef CSRMM_J_PREFETCH_DISTANCE
 #define CSRMM_J_PREFETCH_DISTANCE (8)
-    assert(k_end - k_begin == CSRMM_REG_BLOCK_SIZE*VLEN);
+    assert((k_end - k_begin) % CSRMM_REG_BLOCK_SIZE*VLEN == 0);
 
     SIMDFPTYPE acc[CSRMM_REG_BLOCK_SIZE/**2*/];
-#define CSRMM_REARRANGE_B
+//#define CSRMM_REARRANGE_B
 #ifdef CSRMM_REARRANGE_B
 #ifdef __AVX512F__
 #define CSRMM_REPLICATE_B
@@ -650,91 +659,86 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
 #endif
     float *C_pr = C + (tid_row*num_of_C_col_partitions + tid_col)*i_per_thread*k_per_thread;
 
+    // first col block of A
     int A_col_block = 0;
     for (int i = i_begin; i < i_end; ++i) {
+      for (int kk = 0; kk < k_per_thread/VLEN; kk += CSRMM_REG_BLOCK_SIZE) {
 #pragma unroll(CSRMM_REG_BLOCK_SIZE)
-      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-        acc[k] = _MM_SET1(bias[i]);
+        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
+          acc[k] = _MM_SET1(bias[i]);
 #ifdef DBG_CSRMM
-        if (i == ROW_TO_DEBUG && k_begin + k*VLEN == COL_TO_DEBUG/VLEN*VLEN) {
-          printf("%g ", bias[38]);
-        }
+          if (i == ROW_TO_DEBUG && k_begin + (kk + k)*VLEN == COL_TO_DEBUG/VLEN*VLEN) {
+            printf("%g ", bias[ROW_TO_DEBUG]);
+          }
 #endif
-        _mm_prefetch((const char *)(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN), _MM_HINT_T0);
-      }
-//#pragma unroll(CSRMM_REG_BLOCK_SIZE)
-//      for (int k = 0; k < REG_BLOCK_SIZE; ++k) {
-//        sum[k + CSRMM_REG_BLOCK_SIZE] = _MM_SETZERO();
-//      }
+          _mm_prefetch((const char *)(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN), _MM_HINT_T0);
+        }
 
-#define CSRMM_FMADD(j, k_offset) \
-      _Pragma("unroll(CSRMM_REG_BLOCK_SIZE)") \
-      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) { \
-        acc[k + k_offset] = _MM_FMADD(_MM_SET1(A_data[j]), _MM_LOAD(B_pr + A_j[j] + k*VLEN), acc[k + k_offset]); \
-        _mm_prefetch((const char *)(B_pr + A_j[j + CSRMM_J_PREFETCH_DISTANCE] + k*VLEN), _MM_HINT_T0); \
-        /*if (i == ROW_TO_DEBUG && k_begin + k*VLEN == COL_TO_DEBUG/VLEN*VLEN) { \
-          printf(" + %g*%d:%g", A_data[j], A_j[j]/N, B[A_j[j] + k_begin + k*VLEN + COL_TO_DEBUG%VLEN]); \
-        }*/ \
-      }
+#define CSRMM_FMADD(j) \
+        _Pragma("unroll(CSRMM_REG_BLOCK_SIZE)") \
+        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) { \
+          acc[k] = _MM_FMADD(_MM_SET1(A_data[j]), _MM_LOAD(B_pr + A_j[j] + (kk + k)*VLEN), acc[k]); \
+          _mm_prefetch((const char *)(B_pr + A_j[j + CSRMM_J_PREFETCH_DISTANCE] + (kk + k)*VLEN), _MM_HINT_T0); \
+          /*if (i == ROW_TO_DEBUG && k_begin + (kk + k)*VLEN == COL_TO_DEBUG/VLEN*VLEN) { \
+            printf(" + %g*%d:%g", A_data[j], A_j[j]/N, B[A_j[j] + k_begin + (kk + k)*VLEN + COL_TO_DEBUG%VLEN]); \
+          } \*/ \
+        }
 
 #define CSRMM_UNROLL_FACTOR (4)
 
 #define CSRMM_INNER_PROD \
-      int j_begin = A_i[num_of_A_col_blocks*i_begin + A_col_block*(i_end - i_begin) + (i - i_begin)]; \
-      int j_end = A_i[num_of_A_col_blocks*i_begin + A_col_block*(i_end - i_begin) + (i - i_begin) + 1]; \
-      int len = j_end - j_begin; \
-      int rem = len%CSRMM_UNROLL_FACTOR; \
-      for (int j = j_begin; j < j_begin + len - rem; j += CSRMM_UNROLL_FACTOR) { \
-        /*_mm_prefetch((const char *)(A_data + j + 16), _MM_HINT_T0);*/ \
-        /*_mm_prefetch((const char *)(A_j + j + 16), _MM_HINT_T0);*/ \
-        CSRMM_FMADD(j, 0); \
-        CSRMM_FMADD(j + 1, 0/*CSRMM_REG_BLOCK_SIZE*/); \
-        CSRMM_FMADD(j + 2, 0); \
-        CSRMM_FMADD(j + 3, 0/*CSRMM_REG_BLOCK_SIZE*/); \
-      } \
-      for (int j = j_begin + len - rem; j < j_end; ++j) { \
-        CSRMM_FMADD(j, 0); \
-      }
-
-      CSRMM_INNER_PROD;
-
-#pragma unroll(CSRMM_REG_BLOCK_SIZE)
-      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-        _MM_STORE(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN, /*_MM_ADD(*/acc[k]/*, sum[k + REG_BLOCK_SIZE])*/);
-      }
-    } // for each row
-
-    for (A_col_block = 1; A_col_block < num_of_A_col_blocks - 1; ++A_col_block) {
-      for (int i = i_begin; i < i_end; ++i) {
-#pragma unroll(CSRMM_REG_BLOCK_SIZE)
-        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-          acc[k] = _MM_LOAD(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN);
+        int j_begin = A_i[num_of_A_col_blocks*i_begin + A_col_block*(i_end - i_begin) + (i - i_begin)]; \
+        int j_end = A_i[num_of_A_col_blocks*i_begin + A_col_block*(i_end - i_begin) + (i - i_begin) + 1]; \
+        int len = j_end - j_begin; \
+        int rem = len%CSRMM_UNROLL_FACTOR; \
+        for (int j = j_begin; j < j_begin + len - rem; j += CSRMM_UNROLL_FACTOR) { \
+          /*_mm_prefetch((const char *)(A_data + j + 16), _MM_HINT_T0);*/ \
+          /*_mm_prefetch((const char *)(A_j + j + 16), _MM_HINT_T0);*/ \
+          CSRMM_FMADD(j); \
+          CSRMM_FMADD(j + 1); \
+          CSRMM_FMADD(j + 2); \
+          CSRMM_FMADD(j + 3); \
+        } \
+        for (int j = j_begin + len - rem; j < j_end; ++j) { \
+          CSRMM_FMADD(j); \
         }
-//#pragma unroll(REG_BLOCK_SIZE)
-//        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-//          sum[k + CSRMM_REG_BLOCK_SIZE] = _MM_SETZERO();
-//        }
 
         CSRMM_INNER_PROD;
 
 #pragma unroll(CSRMM_REG_BLOCK_SIZE)
         for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-          _MM_STORE(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN, /*_MM_ADD(*/acc[k]/*, sum[k + REG_BLOCK_SIZE])*/);
+          _MM_STORE(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN, acc[k]);
         }
-      } // for each row
-    } // for each col block
+      } // for each col block of C
+    } // for each row
 
-    for (int i = i_begin; i < i_end; ++i) {
+    for (A_col_block = 1; A_col_block < num_of_A_col_blocks - 1; ++A_col_block) {
+      for (int i = i_begin; i < i_end; ++i) {
+        for (int kk = 0; kk < k_per_thread/VLEN; kk += CSRMM_REG_BLOCK_SIZE) {
 #pragma unroll(CSRMM_REG_BLOCK_SIZE)
-      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-        acc[k] = _MM_LOAD(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN);
-      }
-//#pragma unroll(CSRMM_REG_BLOCK_SIZE)
-//      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-//        sum[k + CSRMM_REG_BLOCK_SIZE] = _MM_SETZERO();
-//      }
+          for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
+            acc[k] = _MM_LOAD(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN);
+          }
 
-      CSRMM_INNER_PROD;
+          CSRMM_INNER_PROD;
+
+#pragma unroll(CSRMM_REG_BLOCK_SIZE)
+          for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
+            _MM_STORE(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN, acc[k]);
+          }
+        } // for each col block of C
+      } // for each row
+    } // for each col block of A
+
+    // last col block of A
+    for (int i = i_begin; i < i_end; ++i) {
+      for (int kk = 0; kk < k_per_thread/VLEN; kk += CSRMM_REG_BLOCK_SIZE) {
+#pragma unroll(CSRMM_REG_BLOCK_SIZE)
+        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
+          acc[k] = _MM_LOAD(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN);
+        }
+
+        CSRMM_INNER_PROD;
 
 #undef CSRMM_INNER_PROD
 #undef CSRMM_FMADD
@@ -742,14 +746,20 @@ static void __attribute__((noinline)) csrmm_fused_C_decomposed(
 #undef CSRMM_J_PREFETCH_DISTANCE
 
 #pragma unroll(CSRMM_REG_BLOCK_SIZE)
-      for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
-        _MM_STORE(C_pr + ((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN, _MM_MAX(_MM_SETZERO(), /*_MM_ADD(*/acc[k]/*, sum[k + REG_BLOCK_SIZE])*/));
+        for (int k = 0; k < CSRMM_REG_BLOCK_SIZE; ++k) {
+          _MM_STORE(C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN, _MM_MAX(_MM_SETZERO(), acc[k]));
 #ifdef DBG_CSRMM
-        if (i == ROW_TO_DEBUG && k_begin + k*VLEN == COL_TO_DEBUG/VLEN*VLEN) {
-          printf(" = %g\n", C_pr[((i - i_begin)*CSRMM_REG_BLOCK_SIZE + k)*VLEN + COL_TO_DEBUG%VLEN]);
-        }
+          if (i == ROW_TO_DEBUG && k_begin + (kk + k)*VLEN == COL_TO_DEBUG/VLEN*VLEN) {
+            float temp[VLEN];
+            _MM_STORE(temp, acc[k]);
+            printf(" = %g->%g:%d\n",
+                temp[COL_TO_DEBUG%VLEN],
+                C_pr[(i - i_begin)*k_per_thread + (kk + k)*VLEN + COL_TO_DEBUG%VLEN],
+                C_pr + (i - i_begin)*k_per_thread + (kk + k)*VLEN + COL_TO_DEBUG%VLEN - C);
+          }
 #endif
-      }
+        }
+      } // for each col block of C
     } // for each row
 
     conv_cycles_of_this_batch[tid*16] = __rdtsc() - t;
