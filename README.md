@@ -38,6 +38,15 @@ Please cite Caffe in your publications if it helps your research:
 
 ## SkimCaffe Specific Description
 
+SkimCaffe has been only tested for bvlc_reference_caffenet and there are a
+couple of places where things are hard-coded for 3x3 and 5x5 convolutions
+of bvlc_reference_caffenet .
+Other networks like GoogLeNet will be soon supported.
+If you can share .prototxt of the network you want to test, we can try our best
+to support it as well.
+Eventually, our sparse CNN implementation will be general enough to handle all
+kinds of networks.
+
 We assume you have a recent Intel compiler and MKL installed.
 Tested environments: (Intel compiler version 15.0.3.187 and boost 1.59.0)
 We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
@@ -59,5 +68,5 @@ make
 
 ```
 bzip2 -d models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel.bz2
-build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv.prototxt -weights models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel -iterations 3
+env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv.prototxt -weights models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel -iterations 3 # assume you have 16 cores. Adjust OMP_NUM_THREADS variable accordingly for your number of cores
 ```
