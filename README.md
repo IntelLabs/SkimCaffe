@@ -58,7 +58,7 @@ More details on direct sparse convolution is described at: https://arxiv.org/abs
 2) Compile SpMP:
 
 ```
-cd experiments/sparsity/SpMP
+cd src/SpMP
 make
 ```
 
