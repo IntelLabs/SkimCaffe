@@ -70,7 +70,7 @@ template<>
 void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	const LayerParameter& layerparam = this->layer_param();
 	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity() << " transpose " << transpose_;
-//	this->blobs_[0]->WriteToNistMMIO(layerparam.name()+".weight");
+	//this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
 
 	posix_memalign((void **)&weight_i_, 4096, sizeof(int)*(std::max(K_, N_) + 1));
 	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
@@ -153,8 +153,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
       FREE(A.diagptr);
       SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
       SpMP::CSR *ATReordered = AReordered->transpose();
-
-  //    A.storeMatrixMarket((layerparam.name() + ".mtx").c_str());
 
       LOG(INFO) << "Average width of " << csr.m << " x " << csr.n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
       LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();

@@ -95,7 +95,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 	//is_sparse_format_weights_ = false;
 	const LayerParameter& layerparam = this->layer_param();
 	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity();
-//	this->blobs_[0]->WriteToNistMMIO(layerparam.name()+".weight");
+	//this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
 
 	ConvolutionParameter conv_param = this->layer_param_.convolution_param();
 	const int M = this->blobs_[0]->shape(0)/group_;
