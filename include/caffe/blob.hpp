@@ -246,6 +246,7 @@ class Blob {
 
   /// @brief snapshot to format of Matrix Market http://math.nist.gov/MatrixMarket/formats.html
   void WriteToNistMMIO(string filename = "") const;
+  void WriteToNistMMIOSparse(string filename = "") const;
 
   /// @brief Compute the sum of absolute values (L1 norm) of the data.
   Dtype asum_data() const;

@@ -703,7 +703,7 @@ void Blob<Dtype>:: WriteToNistMMIO(string filename) const{
 			for (int h=0; h<this->shape(2); h++) {
 				for (int w=0; w<this->shape(3); w++) {
 					for (int n=0; n<this->shape(0); n++) {
-						fprintf(fp, "%20g\n", (double)(*(data_ptr+((n * this->shape(1) + c) * this->shape(2) + h) * this->shape(3) + w)));
+						fprintf(fp, "%20.16g\n", (double)(*(data_ptr+((n * this->shape(1) + c) * this->shape(2) + h) * this->shape(3) + w)));
 					}
 				}
 			}
@@ -711,13 +711,81 @@ void Blob<Dtype>:: WriteToNistMMIO(string filename) const{
 	}else if(num_axes()==2){
 		for (int c=0; c<this->shape(1); c++) {
 			for (int n=0; n<this->shape(0); n++) {
-				fprintf(fp, "%20g\n", (double)(*(data_ptr + n * this->shape(1) + c)) );
+				fprintf(fp, "%20.16g\n", (double)(*(data_ptr + n * this->shape(1) + c)) );
 			}
 		}
 	}
 
 	fclose(fp);
 }
+
+template <typename Dtype>
+void Blob<Dtype>:: WriteToNistMMIOSparse(string filename) const{
+	if(filename.empty()){
+		filename = shape_string()+".blob";
+	}
+	MM_typecode matcode;
+	FILE * fp = fopen(filename.c_str(), "w+");
+	mm_initialize_typecode(&matcode);
+	mm_set_matrix(&matcode);
+	mm_set_sparse(&matcode);
+	mm_set_real(&matcode);
+
+	mm_write_banner(fp, matcode);
+
+	const Dtype * data_ptr = this->cpu_data();
+  int nnz = 0;
+	if(num_axes()==4){
+		for (int c=0; c<this->shape(1); c++) {
+			for (int h=0; h<this->shape(2); h++) {
+				for (int w=0; w<this->shape(3); w++) {
+					for (int n=0; n<this->shape(0); n++) {
+						double v = (double)(*(data_ptr+((n * this->shape(1) + c) * this->shape(2) + h) * this->shape(3) + w));
+            if (v != 0) ++nnz;
+					}
+				}
+			}
+		}
+	}else if(num_axes()==2){
+		for (int c=0; c<this->shape(1); c++) {
+			for (int n=0; n<this->shape(0); n++) {
+				double v = (double)(*(data_ptr + n * this->shape(1) + c));
+        if (v != 0) ++nnz;
+			}
+		}
+	}
+
+	int M = this->shape(0);//column of the stored matrix
+	int N = this->count()/M;
+	mm_write_mtx_crd_size(fp, M, N, nnz);
+
+	/* NOTE: matrix market files use 1-based indices, i.e. first element
+	 of a vector has index 1, not 0.  */
+	if(num_axes()==4){
+		for (int c=0; c<this->shape(1); c++) {
+			for (int h=0; h<this->shape(2); h++) {
+				for (int w=0; w<this->shape(3); w++) {
+					for (int n=0; n<this->shape(0); n++) {
+						double v = (double)(*(data_ptr+((n * this->shape(1) + c) * this->shape(2) + h) * this->shape(3) + w));
+            if (v != 0) {
+						  fprintf(fp, "%d %d %20.16g\n", n + 1, (c*this->shape(2) + h)*this->shape(3) + w + 1, v);
+            }
+					}
+				}
+			}
+		}
+	}else if(num_axes()==2){
+		for (int c=0; c<this->shape(1); c++) {
+			for (int n=0; n<this->shape(0); n++) {
+				double v = (double)(*(data_ptr + n * this->shape(1) + c));
+        if (v != 0) fprintf(fp, "%d %d %20.16g\n", n + 1, c + 1, v);
+			}
+		}
+	}
+
+	fclose(fp);
+}
+
 
 INSTANTIATE_CLASS(Blob);
 template class Blob<int>;
