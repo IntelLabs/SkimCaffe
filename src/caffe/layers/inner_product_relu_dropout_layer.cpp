@@ -88,8 +88,8 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
       if (this->layer_param_.relu_param().negative_slope() != 0) {
         LOG(FATAL) << "InnerProduct layer fused with ReLU in SPMDM mode only works with ReLU using 0 negative slop";
       }
-      if (M_%(VLEN*CSRMM_REG_BLOCK_SIZE) != 0) {
-        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires batch size to be a multiple of " << VLEN*CSRMM_REG_BLOCK_SIZE;
+      if (M_%VLEN != 0) {
+        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires batch size to be a multiple of " << VLEN;
       }
       int num_of_C_col_partitions = 1; // M_/(VLEN*CSRMM_REG_BLOCK_SIZE);
         // TODO: num_of_C_col_partitions is currently fixed to 1
