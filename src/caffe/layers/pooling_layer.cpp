@@ -132,13 +132,13 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   const int top_count = top[0]->count();
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
-  int* mask = NULL;  // suppress warnings about uninitalized variables
-  if (!use_top_mask) mask = max_idx_.mutable_cpu_data();
   Dtype* top_mask = NULL;
   // Different pooling methods. We explicitly do the switch outside the for
   // loop to save time, although this results in more code.
   switch (this->layer_param_.pooling_param().pool()) {
   case PoolingParameter_PoolMethod_MAX:
+    int* mask = NULL;  // suppress warnings about uninitalized variables
+    if (!use_top_mask) mask = max_idx_.mutable_cpu_data();
     int num = bottom[0]->num();
     if (use_top_mask) {
       top_mask = top[1]->mutable_cpu_data();
