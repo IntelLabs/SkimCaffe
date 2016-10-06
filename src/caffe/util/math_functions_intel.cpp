@@ -1142,35 +1142,9 @@ void caffe_cpu_sconv(
       (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
   if (dilation_h != 1 || dilation_w != 1) {
-    // The default inefficient code path
-    LOG(WARNING) << "Inefficient code path";
-    for (int output_row = 0; output_row < output_h; ++output_row) {
-      for (int output_col = 0; output_col < output_w; ++output_col) {
-
-        for (int out_channel = 0; out_channel < out_channels; ++out_channel) {
-          float sum = 0;
-
-          for (int j = rowptr[out_channel]; j < rowptr[out_channel + 1]; ++j) {
-            int off = colidx[j];
-
-            int kernel_col = off%(width + pad_w);
-            int kernel_row = (off/(width + pad_w))%(height + pad_h);
-            int in_channel = off/((width + pad_w)*(height + pad_h));
-
-            int input_row = kernel_row * dilation_h + output_row * stride_h;
-            int input_col = kernel_col * dilation_w + output_col * stride_w;
-
-            sum += values[j]*input_padded[(in_channel * (height + pad_h) + input_row) * (width + pad_w) + input_col];
-          }
-
-          output[(out_channel * output_h + output_row) * output_w + output_col] = sum;
-        }
-      }
-    }
+    // fall through to the default path
   }
-  else {
-#if 1 //defined(__AVX2__) && defined(__INTEL_COMPILER)
-    if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
+  else if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
       sconv2_fused(
         input_padded,
         rowptr, colidx, values,
@@ -1178,80 +1152,93 @@ void caffe_cpu_sconv(
         pool_top, mask,
         output,
         out_channels);
+      return;
+  }
+  else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
+    sconv2_overfeat(
+      input_padded,
+      rowptr, colidx, values,
+      bias,
+      pool_top, mask,
+      output,
+      out_channels);
+    return;
+  }
+  else if (pad_h == 1 && pad_w == 1 && stride_h == 1 && stride_w == 1 && kernel_h == 3 && kernel_w == 3 && height == width) {
+    if (width == 12) {
+      // overfeat
+      sconv_3x3_pad1<12>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
     }
-    else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
-      sconv2_overfeat(
-        input_padded,
-        rowptr, colidx, values,
-        bias,
-        pool_top, mask,
-        output,
-        out_channels);
+    else if (width == 13) {
+      // alexnet conv3-5
+      sconv_3x3_pad1<13>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
     }
-    else if (height == 13 && width == 13 && pad_h == 1 && pad_w == 1 && stride_h == 1 && stride_w == 1 && kernel_h == 3 && kernel_w == 3) {
-//#ifdef __AVX512F__
-//      if (col_major_ic_block <= 8) {
-//        sconv345_ver2(
-//            input_padded, input, in_channels,
-//            blockptr, kidx, values_colmajor,
-//            bias,
-//            output, out_channels, input_scratch, output_colmajor_scratch, col_major_ic_block);
-//      }
-//      else
-//#endif
-      {
-#ifdef __AVX512F__
-        sconv345_split(
-            input_aligned,
-            rowptr_split, colidx_split, values_split,
-            ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-#else
-        sconv345(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-#endif
-      }
+    else if (width == 56) {
+      sconv_3x3_pad1<56>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
     }
-    else if (height == 12 && width == 12 && pad_h == 1 && pad_w == 1 && stride_h == 1 && stride_w == 1 && kernel_h == 3 && kernel_w == 3) {
-#ifdef __AVX512F__
-      if (out_channels == 512) {
-        // overfeat conv3
-        sconv345_split_overfeat(
-            input_aligned,
-            rowptr_split, colidx_split, values_split,
-            ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-      }
-      else
-#endif
-      {
-        sconv345_overfeat(
-              input_padded,
-              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-              bias,
-              output, out_channels, output_scratch);
-      }
-    }
-    else
-#endif
-    if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {
-      int WIDTH = 227;
-      int STRIDE = 4;
-      int K = 11;
-      int WOUT = (WIDTH - K)/STRIDE + 1; // 55
-      const int JBLOCK = 128;
-      const int HBLOCK = 8;
-      const int WBLOCK = 9;
+  }
+  else if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {
+    int WIDTH = 227;
+    int STRIDE = 4;
+    int K = 11;
+    int WOUT = (WIDTH - K)/STRIDE + 1; // 55
+    const int JBLOCK = 128;
+    const int HBLOCK = 8;
+    const int WBLOCK = 9;
 
-      __declspec(aligned(64)) float sum[WOUT*WOUT];
+    __declspec(aligned(64)) float sum[WOUT*WOUT];
 
-      for (int out_channel = 0; out_channel < out_channels; ++out_channel) {
-        int jbegin = rowptr[out_channel];
+    for (int out_channel = 0; out_channel < out_channels; ++out_channel) {
+      int jbegin = rowptr[out_channel];
+      int jend = std::min(jbegin + JBLOCK, rowptr[out_channel + 1]);
+
+      for (int hbegin = 0; hbegin < WOUT; hbegin += HBLOCK) {
+        int hend = std::min(hbegin + HBLOCK, WOUT);
+
+        for (int wbegin = 0; wbegin < WOUT; wbegin += WBLOCK) {
+          int wend = std::min(wbegin + WBLOCK, WOUT);
+
+          for (int k = 0; k < (hend - hbegin) * (wend - wbegin); ++k) {
+            sum[k] = 0;
+          }
+
+          for (int j = jbegin; j < jend; ++j) {
+            float c = values[j];
+            int off = colidx[j];
+            int k = 0;
+            for (int h = hbegin; h < hend; ++h) {
+              for (int w = wbegin; w < wend; ++w, ++k) {
+                sum[k] += c*input_padded[off + (h*WIDTH + w)*STRIDE];
+              }
+            }
+          }
+
+          int k = 0;
+          for (int h = hbegin; h < hend; ++h) {
+            for (int w = wbegin; w < wend; ++w, ++k) {
+              output[(out_channel*WOUT + h)*WOUT + w] = sum[k];
+            }
+          }
+        }
+      }
+      jbegin += JBLOCK;
+
+      for ( ; jbegin < rowptr[out_channel + 1]; jbegin += JBLOCK) {
         int jend = std::min(jbegin + JBLOCK, rowptr[out_channel + 1]);
 
         for (int hbegin = 0; hbegin < WOUT; hbegin += HBLOCK) {
@@ -1278,46 +1265,12 @@ void caffe_cpu_sconv(
             int k = 0;
             for (int h = hbegin; h < hend; ++h) {
               for (int w = wbegin; w < wend; ++w, ++k) {
-                output[(out_channel*WOUT + h)*WOUT + w] = sum[k];
+                output[(out_channel*WOUT + h)*WOUT + w] += sum[k];
               }
             }
           }
         }
-        jbegin += JBLOCK;
-
-        for ( ; jbegin < rowptr[out_channel + 1]; jbegin += JBLOCK) {
-          int jend = std::min(jbegin + JBLOCK, rowptr[out_channel + 1]);
-
-          for (int hbegin = 0; hbegin < WOUT; hbegin += HBLOCK) {
-            int hend = std::min(hbegin + HBLOCK, WOUT);
-
-            for (int wbegin = 0; wbegin < WOUT; wbegin += WBLOCK) {
-              int wend = std::min(wbegin + WBLOCK, WOUT);
-
-              for (int k = 0; k < (hend - hbegin) * (wend - wbegin); ++k) {
-                sum[k] = 0;
-              }
-
-              for (int j = jbegin; j < jend; ++j) {
-                float c = values[j];
-                int off = colidx[j];
-                int k = 0;
-                for (int h = hbegin; h < hend; ++h) {
-                  for (int w = wbegin; w < wend; ++w, ++k) {
-                    sum[k] += c*input_padded[off + (h*WIDTH + w)*STRIDE];
-                  }
-                }
-              }
-
-              int k = 0;
-              for (int h = hbegin; h < hend; ++h) {
-                for (int w = wbegin; w < wend; ++w, ++k) {
-                  output[(out_channel*WOUT + h)*WOUT + w] += sum[k];
-                }
-              }
-            }
-          }
-        }
+      }
 
 //            for (int j = rowptr[out_channel]; j < rowptr[out_channel + 1]; ++j) {
 //              float c = values[j];
@@ -1378,40 +1331,30 @@ void caffe_cpu_sconv(
 //                output[(out_channel*WOUT + h)*WOUT + w] = sum[h*WOUT + w];
 //              }
 //            }
-      }
     }
-    else
-    {
-      LOG(WARNING) << "Inefficient code path";
-
-      for (int output_row = 0; output_row < output_h; ++output_row) {
-        for (int output_col = 0; output_col < output_w; ++output_col) {
-
-          const float *in = input_padded + output_row * stride_h * (width + pad_w) + output_col * stride_w;
-
-          for (int oc = 0; oc < out_channels; ++oc) {
-            float sum = bias[oc];
-//            if (oc == 220 && output_row == 8 && output_col == 3) {
-//              printf("%g", sum);
-//            }
-
-            for (int j = rowptr[oc]; j < rowptr[oc + 1]; ++j) {
-//              assert(in_temp2 + colidx[j] - input_padded < input_padded_len);
-              sum += values[j]*in[colidx[j]];
-//              if (oc == 220 && output_row == 8 && output_col == 3) {
-//                printf(" + %g*%g", values[j], in[colidx[j]]);
-//              }
-            }
-
-            output[(oc*output_h + output_row)*output_w + output_col] = sum;
-//            if (oc == 220 && output_row == 8 && output_col == 3) {
-//              printf(" = %g\n", sum);
-//            }
-          }
-        }
-      } // !__AVX2__
-    }
+    return;
   }
+
+  LOG(WARNING) <<
+      "Inefficient code path: kernel " << kernel_w << "x" << kernel_h <<
+      " image " << width << "x" << height <<
+      " pad " << pad_w << "x" << pad_h <<
+      " stride " << stride_w << "x" << stride_h <<
+      " dilation " << dilation_w << "x" << dilation_h;
+
+  caffe_cpu_sconv_default(
+      // input features
+      input_padded, in_channels,
+      height, width,
+      pad_h, pad_w,
+      stride_h, stride_w,
+      dilation_h, dilation_w,
+      // weights
+      rowptr, colidx, values,
+      kernel_h, kernel_w,
+      bias,
+      // output features
+      output, out_channels);
 }
 
 }  // namespace caffe
