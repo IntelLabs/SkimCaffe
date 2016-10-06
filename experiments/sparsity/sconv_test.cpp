@@ -109,7 +109,7 @@ int main(int argc, const char *argv[])
   const int NIN = 256;
   const int K = 3;
   const int WIDTH = 13;
-  const int WOUT = 13;
+  const int WOUT = WIDTH;
   const int PAD = 1;
   int colblock = COL_BLOCK;
 
@@ -160,7 +160,7 @@ int main(int argc, const char *argv[])
   int col_major_ic_block = get_col_major_ic_block(nnz, NOUT, NIN);
   printf("col_major_ic_block = %d\n", col_major_ic_block);
 
-  const int SCRATCH_SIZE_PER_IC = WOUT*16;
+  const int SCRATCH_SIZE_PER_IC = WOUT*((WOUT + 16 - 1)/16*16);
   for (int r = 0; r < 1; ++r) {
     //posix_memalign((void **)&blockptr_colmajor[r], 4096, sizeof(int)*(NIN/col_major_ic_block*NOUT + 1));
     //memset(blockptr_colmajor[r], 0, sizeof(int)*(NIN/col_major_ic_block*NOUT + 1));
@@ -215,8 +215,6 @@ int main(int argc, const char *argv[])
     }
     assert(rowptr_split[r][ncolblocks*NOUT*K] == nnz);
 
-    //const int VLEN = 16;
-
     for (int oc = 0; oc < NOUT; ++oc) {
       for (int j = A->rowptr[oc]; j < A->rowptr[oc + 1]; ++j) {
         int c = A->colidx[j];
@@ -266,7 +264,7 @@ int main(int argc, const char *argv[])
     //}
   }
 
-  size_t input_size = sizeof(float)*1*NBATCH*NOUT*(WIDTH + PAD)*16;
+  size_t input_size = sizeof(float)*NBATCH*(NIN*(WIDTH + PAD)*(WIDTH + PAD) + PAD*(WIDTH + 2*PAD));
   float *input = (float *)_mm_malloc(input_size, 4096);
 //  float *input = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
 #pragma omp parallel for
@@ -274,9 +272,8 @@ int main(int argc, const char *argv[])
     input[i] = i;
   }
 
-  size_t output_size = sizeof(float)*1*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD);
+  size_t output_size = sizeof(float)*1*NBATCH*NOUT*WOUT*WOUT;
   float *output = (float *)_mm_malloc(output_size, 4096);
-//  float *output = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
 #pragma omp parallel for
   for (int i = 0; i < output_size/sizeof(float); ++i) {
     output[i] = 0;
@@ -287,8 +284,9 @@ int main(int argc, const char *argv[])
   for (int i = 0; i < NOUT; ++i) {
     bias[i] = -i;
   }
-  float *scratch = (float *)_mm_malloc(sizeof(float)*OC_BLOCK*WIDTH*16*nthreads, 4096);
-  memset((void *)scratch, 0, sizeof(float)*OC_BLOCK*WIDTH*16*nthreads);
+  size_t scratch_size = sizeof(float)*OC_BLOCK*WOUT*((WOUT + 16 - 1)/16*16)*nthreads;
+  float *scratch = (float *)_mm_malloc(scratch_size, 4096);
+  memset((void *)scratch, 0, scratch_size);
 
   /*float *input_scratch = (float *)_mm_malloc(sizeof(float)*nthreads*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC, 4096);
   memset((void *)input_scratch, 0, sizeof(float)*nthreads*col_major_ic_block*K*K*SCRATCH_SIZE_PER_IC);*/
@@ -388,14 +386,14 @@ int main(int argc, const char *argv[])
 //            bias,
 //            output + i*NOUT*WOUT*WOUT, NOUT,
 //            input_scratch, output_colmajor_scratch, col_major_ic_block);
-          sconv345(
+        sconv_3x3_pad1<13>(
               input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD),
               //A->rowptr, A->colidx, values,
               rowptr_blocked_temp, colidx_blocked_temp, values_blocked_temp,
               ncolblocks,
               bias,
-              output + i*NOUT*(WIDTH + PAD)*(WIDTH + PAD), NOUT,
-              scratch + tid*OC_BLOCK*WIDTH*16);
+              output + i*NOUT*WOUT*WOUT, NOUT,
+              scratch + tid*OC_BLOCK*WOUT*((WOUT + 16 - 1)/16*16));
           //sconv345_split(
               //input + (/*j*NBATCH*/ + i)*NIN*(WIDTH + PAD)*16,
               //rowptr_split[0], colidx_split[0], values_split[0],
@@ -431,6 +429,38 @@ int main(int argc, const char *argv[])
 #endif
 
   t = omp_get_wtime() - t;
+
+  // correctness check
+  float *output_ref = (float *)_mm_malloc(output_size, 4096);
+
+#pragma omp parallel for
+  for (int i = 0; i < NBATCH; ++i) {
+    caffe_cpu_sconv_default(
+        input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD), NIN,
+        WIDTH, WIDTH,
+        PAD, PAD,
+        1, 1,
+        1, 1,
+        A->rowptr, A->colidx, values,
+        K, K,
+        bias,
+        output_ref + i*NOUT*WOUT*WOUT, NOUT);
+  }
+
+  for (int i = 0; i < NBATCH; ++i) {
+    for (int j = 0; j < NOUT; ++j) {
+      for (int k = 0; k < WOUT; ++k) {
+        for (int l = 0; l < WOUT; ++l) {
+          float expected = output_ref[((i*NOUT + j)*WOUT + k)*WOUT + l];
+          float actual = output[((i*NOUT + j)*WOUT + k)*WOUT + l];
+          if (fabs(expected - actual)/fabs(expected) > 1e-1) {
+            printf("(%d, %d, %d, %d) expected %g actual %g\n", i, j, k, l, expected, actual);
+            return -1;
+          }
+        }
+      }
+    }
+  }
 
   unsigned long long max_cycles = 0, max_cycles2 = 0;
   unsigned long long sum_cycles = 0;
