@@ -232,7 +232,6 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 //          memset(weight_blockptr_colmajor_[g], 0, sizeof(int)*(conv_in_channels_/group_*M + 1));
 //          posix_memalign((void **)&weight_kidx_colmajor_[g], 4096, sizeof(int)*nnz);
 //          posix_memalign((void **)&weight_values_colmajor_[g], 4096, sizeof(float)*nnz);
-          int VLEN = 16;
 
           posix_memalign((void **)&weight_rowptr_split_[g], 4096, sizeof(int)*(ncolblocks*M*kernel_w + 1));
           memset(weight_rowptr_split_[g], 0, sizeof(int)*(ncolblocks*M*kernel_w + 1));
@@ -378,7 +377,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
         const int output_w = (width + 2 * pad_w -
             (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
-        const int SCRATCH_SIZE_PER_IC = output_h*16;
+        const int SCRATCH_SIZE_PER_IC = output_h*((output_w + 16 - 1)/16*16);
 
         int max_col_major_ic_block = 0;
 				for (int g = 0; g < group_; ++g) {
@@ -401,7 +400,6 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 
               weight_colidx_blocked_[bcol][nnzs_of_col_blocks[bcol]] = c;
               weight_values_blocked_[bcol][nnzs_of_col_blocks[bcol]] = values[j];
-              const int VLEN = 16;
 //              weight_colidx_interleaved_[bcol][nnzs_of_col_blocks[bcol]] = c*VLEN;
               nnzs_of_col_blocks[bcol]++;
 
@@ -443,7 +441,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 
 
 
-	      posix_memalign((void **)&output_scratch_, 4096, sizeof(float)*OC_BLOCK*width*16*omp_get_max_threads());
+	      posix_memalign((void **)&output_scratch_, 4096, sizeof(float)*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16)*omp_get_max_threads());
 
 //	      posix_memalign(
 //	          (void **)&input_scratch_,
@@ -687,6 +685,9 @@ void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     weight_shape.push_back(kernel_shape_data[i]);
   }
   bias_term_ = this->layer_param_.convolution_param().bias_term();
+  if (!bias_term_ && this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
+    LOG(FATAL) << "DIRECT_SCONV only works with bias term";
+  }
   vector<int> bias_shape(bias_term_, num_output_);
   if (this->blobs_.size() > 0) {
     CHECK_EQ(1 + bias_term_, this->blobs_.size())
@@ -1065,7 +1066,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             ((ConvolutionReLUPoolLRNLayer<float> *)this)->max_idx_.mutable_cpu_data() + ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g),
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*width*16,
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
             col_major_ic_block,
             input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
             weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
@@ -1100,14 +1101,13 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             mask,
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*width*16,
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
             col_major_ic_block,
             input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
             weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
 		  }
 		  else {
 #ifdef VECTORIZE_OVER_INPUTS
-        const int VLEN = 16;
 		    if (std::string(type()) == "ConvolutionReLU")
 		    {
 		      if (batch_idx%VLEN == 0) {
@@ -1146,7 +1146,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
               NULL, NULL,
               output + output_offset_ * g,
               M,
-              output_scratch_ + tid*OC_BLOCK*width*16,
+              output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
               col_major_ic_block,
               input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
               weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
@@ -1156,9 +1156,11 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 		  break;
 	  }
 	  default:
+	  conv_cycles_of_this_batch[tid*16] = __rdtsc();
 		caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M, N, K,
 				  (float)1., weights + weight_offset_ * g, col_buff + col_offset_ * g,
 				  (float)0., output + output_offset_ * g);
+		conv_cycles_of_this_batch[tid*16] = __rdtsc() - conv_cycles_of_this_batch[tid*16];
 		break;
 	  }
   }
