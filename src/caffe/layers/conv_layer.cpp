@@ -61,6 +61,36 @@ void ConvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
         this->forward_cpu_bias(top_data + n * this->top_dim_, bias);
       }
     }
+
+    const LayerParameter& layerparam = this->layer_param();
+
+    if (layerparam.convolution_param().dump_activation()) {
+      assert(bottom.size() == 1);
+      static std::map<std::string, int> mtx_cnt_map;
+      if (mtx_cnt_map.find(layerparam.name()) == mtx_cnt_map.end()) {
+        mtx_cnt_map[layerparam.name()] = 0;
+      }
+
+      for (int n = 0; n < this->num_; ++n) {
+        char mtx_name[1024];
+        sprintf(mtx_name, "%s_in_%d_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()], n);
+        if (bottom[i]->num_axes() != 4) {
+          printf("%s\n", bottom[i]->shape_string().c_str());
+        }
+        assert(bottom[i]->num_axes() == 4);
+        Blob<Dtype>::Write3DTensorToNistMMIOSparse(
+            mtx_name, bottom_data + n * this->bottom_dim_,
+            bottom[i]->shape(1), bottom[i]->shape(2), bottom[i]->shape(3));
+
+        sprintf(mtx_name, "%s_out_%d_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()], n);
+        assert(top[i]->num_axes() == 4);
+        Blob<Dtype>::Write3DTensorToNistMMIOSparse(
+            mtx_name, top_data + n * this->top_dim_,
+            top[i]->shape(1), top[i]->shape(2), top[i]->shape(3));
+      }
+
+      ++mtx_cnt_map[layerparam.name()];
+    }
   }
 
   mkl_set_num_threads(mkl_max_threads_saved);

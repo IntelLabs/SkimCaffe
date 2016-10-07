@@ -95,9 +95,12 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 	//is_sparse_format_weights_ = false;
 	const LayerParameter& layerparam = this->layer_param();
 	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity();
-	//this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
 
-	ConvolutionParameter conv_param = this->layer_param_.convolution_param();
+	ConvolutionParameter conv_param = layerparam.convolution_param();
+	if (conv_param.dump_parameter()) {
+	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
+	}
+
 	const int M = this->blobs_[0]->shape(0)/group_;
 	const int N = this->blobs_[0]->count(1,4);
 	const int weight_offset = this->blobs_[0]->count()/group_;
@@ -171,11 +174,15 @@ void BaseConvolutionLayer<float>::WeightAlign(){
         int kernel_h = kernel_shape_.cpu_data()[0];
         int kernel_w = kernel_shape_.cpu_data()[1];
 
-        int col_block_size = COL_BLOCK;
-        if (conv_in_channels_ == 1024) {
-          // Overfeat conv5
-          col_block_size = 128;
+        int temp_nnz = 0;
+				for (int g = 0; g < group_; ++g) {
+				  for (int i = 0; i < M*N; ++i) {
+				    if (this->blobs_[0]->cpu_data()[weight_offset*g + i] != 0) ++temp_nnz;
+				  }
         }
+        int col_block_size = get_col_major_ic_block(temp_nnz/group_, M, conv_in_channels_/group_);
+        assert(conv_in_channels_/group_%col_block_size == 0);
+
         int ncolblocks = conv_in_channels_/col_block_size;
         LOG(INFO) << "ncolblocks " << ncolblocks;
         weight_rowptr_blocked_.resize(ncolblocks);
@@ -723,6 +730,11 @@ void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       shared_ptr<Filler<Dtype> > bias_filler(GetFiller<Dtype>(
           this->layer_param_.convolution_param().bias_filler()));
       bias_filler->Fill(this->blobs_[1].get());
+
+      const LayerParameter& layerparam = this->layer_param();
+      if (conv_param.dump_parameter()) {
+        this->blobs_[1]->WriteToNistMMIO(layerparam.name() + "_bias.mtx");
+      }
     }
   }
   kernel_dim_ = this->blobs_[0]->count(1);

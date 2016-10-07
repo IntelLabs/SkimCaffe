@@ -642,6 +642,8 @@ message ConvolutionParameter {
     DIRECT_DCONV = 4;  //direct convolution on tensors without lowering, dense format
   }
   optional ConvMode conv_mode = 21 [default = LOWERED_GEMM];
+  optional bool dump_parameter = 22 [default = false];
+  optional bool dump_activation = 23 [default = false];
 }
 
 message DataParameter {
@@ -854,6 +856,9 @@ message InnerProductParameter {
   // transpose output only for the last layer of the series
   optional bool spmdm_transpose_in = 8 [default = true];
   optional bool spmdm_transpose_out = 9 [default = true];
+  
+  optional bool dump_parameter = 10 [default = false];
+  optional bool dump_activation = 11 [default = false];
 }
 
 message InputParameter {

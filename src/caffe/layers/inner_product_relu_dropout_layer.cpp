@@ -70,7 +70,10 @@ template<>
 void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	const LayerParameter& layerparam = this->layer_param();
 	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity() << " transpose " << transpose_;
-	//this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
+
+	if (layerparam.inner_product_param().dump_parameter()) {
+	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
+	}
 
 	posix_memalign((void **)&weight_i_, 4096, sizeof(int)*(std::max(K_, N_) + 1));
 	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
@@ -398,6 +401,20 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     total_conv_cycles[name] += t*get_cpu_freq();
     total_conv_flops[name] += 2.*M_*K_*N_;
     total_files += M_;
+
+    static std::map<std::string, int> mtx_cnt_map;
+    if (mtx_cnt_map.find(layerparam.name()) == mtx_cnt_map.end()) {
+      mtx_cnt_map[layerparam.name()] = 0;
+    }
+
+    char mtx_name[1024];
+    sprintf(mtx_name, "%s_in_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
+    bottom[0]->WriteToNistMMIOSparse(mtx_name);
+
+    sprintf(mtx_name, "%s_out_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
+    top[0]->WriteToNistMMIOSparse(mtx_name);
+
+    ++mtx_cnt_map[layerparam.name()];
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
     MKL_INT job[] = {
@@ -464,6 +481,22 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
             + negative_slope * std::min(top_data[i], float(0));
       }
     }
+  }
+
+  if (layerparam.inner_product_param().dump_activation()) {
+    static std::map<std::string, int> mtx_cnt_map;
+    if (mtx_cnt_map.find(layerparam.name()) == mtx_cnt_map.end()) {
+      mtx_cnt_map[layerparam.name()] = 0;
+    }
+
+    char mtx_name[1024];
+    sprintf(mtx_name, "%s_in_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
+    bottom[0]->WriteToNistMMIOSparse(mtx_name);
+
+    sprintf(mtx_name, "%s_out_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
+    top[0]->WriteToNistMMIOSparse(mtx_name);
+
+    ++mtx_cnt_map[layerparam.name()];
   }
 }
 

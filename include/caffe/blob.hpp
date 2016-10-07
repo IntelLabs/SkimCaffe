@@ -245,8 +245,17 @@ class Blob {
   void Snapshot(string filename = "", bool write_diff = false) const;
 
   /// @brief snapshot to format of Matrix Market http://math.nist.gov/MatrixMarket/formats.html
+  /// For high-mode tensors, we do 0-mode matricization.
   void WriteToNistMMIO(string filename = "") const;
   void WriteToNistMMIOSparse(string filename = "") const;
+
+  static void Write1DTensorToNistMMIO(string filename, const Dtype *data, int I);
+  static void Write2DTensorToNistMMIO(string filename, const Dtype *data, int I0, int I1);
+  static void Write4DTensorToNistMMIO(string filename, const Dtype *data, int I0, int I1, int I2, int I3);
+
+  static void Write2DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1);
+  static void Write3DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1, int I2);
+  static void Write4DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1, int I2, int I3);
 
   /// @brief Compute the sum of absolute values (L1 norm) of the data.
   Dtype asum_data() const;
