@@ -36,7 +36,11 @@ extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, p
 static int get_col_major_ic_block(int nnz, int num_out_channels, int num_in_channels) {
   // # of in-channels to have on average 8 non-zeros per out-channel
   double nnz_per_oc_and_ic = (double)nnz/num_out_channels/num_in_channels;
-  return std::max(8, 1 << (int)round(log2(std::max(1., 8/nnz_per_oc_and_ic))));
+  int ret = std::max(8, 1 << (int)round(log2(std::max(1., 8/nnz_per_oc_and_ic))));
+  while (num_in_channels%ret != 0) {
+    ++ret;
+  }
+  return ret;
 }
 
 extern int flop_cnt;
