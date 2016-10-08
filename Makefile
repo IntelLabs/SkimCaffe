@@ -324,7 +324,12 @@ ifeq ($(DEBUG), 1)
 else
 	COMMON_FLAGS += -DNDEBUG -O3
 endif
-CXXFLAGS += -xHost
+
+ifeq ($(KNL), 1)
+  CXXFLAGS += -xMIC-AVX512
+else
+  CXXFLAGS += -xHost
+endif
 
 # cuDNN acceleration configuration.
 ifeq ($(USE_CUDNN), 1)
