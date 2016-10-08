@@ -14,10 +14,11 @@
 
 #define _MM_LOAD(a) _mm512_load_ps(a)
 #define _MM_LOADU(a) _mm512_loadu_ps(a)
+#define _MM_LOAD_SI(a) _mm512_load_si512(a)
 
 #define _MM_STORE(a, b) _mm512_store_ps(a, b)
 #define _MM_STOREU(a, b) _mm512_storeu_ps(a, b)
-#define _MM_MASK_STORE(a, mask, b) _mm512_maskstore_ps(a, mask, b)
+#define _MM_MASK_STORE(a, mask, b) _mm512_mask_storeu_ps(a, mask, b)
 
 #elif __AVX2__
 
@@ -32,6 +33,7 @@
 
 #define _MM_LOAD(a) _mm256_load_ps(a)
 #define _MM_LOADU(a) _mm256_loadu_ps(a)
+#define _MM_LOAD_SI(a) _mm256_load_si256(a)
 
 #define _MM_STORE(a, b) _mm256_store_ps(a, b)
 #define _MM_STOREU(a, b) _mm256_storeu_ps(a, b)
@@ -50,6 +52,7 @@
 
 #define _MM_LOAD(a) _mm_load_ps(a)
 #define _MM_LOADU(a) _mm_loadu_ps(a)
+#define _MM_LOAD_SI(a) _mm_load_si128(a)
 
 #define _MM_STORE(a, b) _mm_store_ps(a, b)
 #define _MM_STOREU(a, b) _mm_storeu_ps(a, b)
