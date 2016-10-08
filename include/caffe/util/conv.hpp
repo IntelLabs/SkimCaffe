@@ -37,6 +37,9 @@ static int get_col_major_ic_block(int nnz, int num_out_channels, int num_in_chan
   // # of in-channels to have on average 8 non-zeros per out-channel
   double nnz_per_oc_and_ic = (double)nnz/num_out_channels/num_in_channels;
   int ret = std::max(8, 1 << (int)round(log2(std::max(1., 8/nnz_per_oc_and_ic))));
+  ret = std::min(num_in_channels/2, ret);
+    // if block size is bigger than num_in_channels/2, we will have only 1 block
+    // but our sconv kernels need at least 2 blocks.
   while (num_in_channels%ret != 0) {
     ++ret;
   }
@@ -73,6 +76,8 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
     float *scratch) // scratch: 832B per OC_BLOCK
 {
   unsigned long long t = __rdtsc();
+
+  assert(ncolblocks >= 2);
 
   int nthreads = omp_get_num_threads();
   int tid = omp_get_thread_num();
