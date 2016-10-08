@@ -401,20 +401,6 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     total_conv_cycles[name] += t*get_cpu_freq();
     total_conv_flops[name] += 2.*M_*K_*N_;
     total_files += M_;
-
-    static std::map<std::string, int> mtx_cnt_map;
-    if (mtx_cnt_map.find(layerparam.name()) == mtx_cnt_map.end()) {
-      mtx_cnt_map[layerparam.name()] = 0;
-    }
-
-    char mtx_name[1024];
-    sprintf(mtx_name, "%s_in_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
-    bottom[0]->WriteToNistMMIOSparse(mtx_name);
-
-    sprintf(mtx_name, "%s_out_%d.mtx", layerparam.name().c_str(), mtx_cnt_map[layerparam.name()]);
-    top[0]->WriteToNistMMIOSparse(mtx_name);
-
-    ++mtx_cnt_map[layerparam.name()];
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
     MKL_INT job[] = {
