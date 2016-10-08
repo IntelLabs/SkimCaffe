@@ -72,7 +72,7 @@ env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe
 ```
 
 Example output from Intel(R) Xeon(R) CPU E5-2699 v4 @ 2.20GHz
-Used 88 omp threads (using hyper-threading)
+Used 88 omp threads (using hyper-threading) and batch size 264
 
 ```
 I1005 14:22:20.452144 68219 conv_relu_pool_lrn_layer.cpp:747] conv1 K-cycles-per-file max 752.933 avg 508.823 mFlops-per-file 210.83 GF/s 614.611
