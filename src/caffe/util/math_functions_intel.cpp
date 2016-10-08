@@ -1183,6 +1183,31 @@ void caffe_cpu_sconv(
           output, out_channels, output_scratch);
       return;
     }
+    // the following sizes are used by GoogLeNet
+    else if (width == 7) {
+      sconv_3x3_pad1<7>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
+    }
+    else if (width == 14) {
+      sconv_3x3_pad1<14>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
+    }
+    else if (width == 28) {
+      sconv_3x3_pad1<28>(
+          input_padded,
+          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+          bias,
+          output, out_channels, output_scratch);
+      return;
+    }
     else if (width == 56) {
       sconv_3x3_pad1<56>(
           input_padded,
