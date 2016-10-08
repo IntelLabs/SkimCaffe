@@ -34,9 +34,9 @@ extern synk::Barrier *barriers[256];
 extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, pool_cycle;
 
 static int get_col_major_ic_block(int nnz, int num_out_channels, int num_in_channels) {
-  // # of in-channels to have on average 8 non-zeros per out-channel
+  // # of in-channels to have on average 32 non-zeros per out-channel
   double nnz_per_oc_and_ic = (double)nnz/num_out_channels/num_in_channels;
-  int ret = std::max(8, 1 << (int)round(log2(std::max(1., 8/nnz_per_oc_and_ic))));
+  int ret = std::max(8, 1 << (int)round(log2(std::max(1., 32/nnz_per_oc_and_ic))));
   ret = std::min(num_in_channels/2, ret);
     // if block size is bigger than num_in_channels/2, we will have only 1 block
     // but our sconv kernels need at least 2 blocks.
@@ -231,8 +231,8 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
       }
     }
 #elif defined(__AVX2__)
-    __m256 sum[REG_BLOCK_H][REG_BLOCK_W];
-    __m256 w_v;
+    SIMDFPTYPE sum[REG_BLOCK_H][REG_BLOCK_W];
+    SIMDFPTYPE w_v;
     int off;
 
     const int *rowptr = rowptr_blocked[0];
@@ -240,7 +240,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
     const float *values = values_blocked[0];
 
     for (int out_channel = oc_begin; out_channel < oc_begin + OC_BLOCK; ++out_channel) {
-      __m256 bias_v = _mm256_set1_ps(bias[out_channel]);
+      SIMDFPTYPE bias_v = _MM_SET1(bias[out_channel]);
 
       int jbegin = rowptr[out_channel];
       int jend = rowptr[out_channel + 1];
@@ -256,32 +256,36 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int w = 0; w < REG_BLOCK_W; ++w) {
             sum[h - hbegin][w] = bias_v;
 
+//#define DBG_SCONV
 #ifdef DBG_SCONV
-            if (out_channel == 359 && h == 32 && 28 >= w*VLEN && 28 < (w + 1)*VLEN) {
+#define CHANNEL_TO_DEBUG (359)
+#define ROW_TO_DEBUG (32)
+#define COL_TO_DEBUG (28)
+            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG && COL_TO_DEBUG >= w*VLEN && COL_TO_DEBUG < (w + 1)*VLEN) {
               float temp[VLEN];
-              _mm256_store_ps(temp, bias_v);
-              printf("%g", temp[28 - w*VLEN]);
+              _MM_STORE(temp, bias_v);
+              printf("%g", temp[COL_TO_DEBUG - w*VLEN]);
             }
 #endif
           }
         }
 
         for (int j = jbegin; j < jend; ++j) {
-          w_v = _mm256_set1_ps(values[j]);
+          w_v = _MM_SET1(values[j]);
           off = colidx[j];
 
 #pragma unroll(REG_BLOCK_H)
           for (int h = 0; h < REG_BLOCK_H; ++h) { // by some reason, iterating from hbegin to hend prevents icc from unrolling
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
+              sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
             }
 
 #ifdef DBG_SCONV
-            if (out_channel == 359 && h == 32) {
+            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
               float temp[VLEN];
-              _mm256_store_ps(temp, sum[h - hbegin][28/VLEN]);
-              printf(" + %g*%d:%g:%g", values[j], off, input[off + 32*(WIDTH + PAD) + 28], temp[28%VLEN]);
+              _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
+              printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
             }
 #endif
           }
@@ -291,7 +295,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            _mm256_store_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+            _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
           }
         }
       } // for each register block
@@ -310,14 +314,14 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         }
 
         for (int j = jbegin; j < jend; ++j) {
-          w_v = _mm256_set1_ps(values[j]);
+          w_v = _MM_SET1(values[j]);
           off = colidx[j];
 
 #pragma unroll(WOUT%REG_BLOCK_H)
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
+              sum[h - hbegin][w] = _MM_FMADD(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
             }
           }
         }
@@ -326,7 +330,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            _mm256_store_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+            _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
@@ -350,7 +354,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _mm256_load_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+              sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
             }
           }
 
@@ -362,13 +366,13 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
             for (int h = 0; h < REG_BLOCK_H; ++h) {
 #pragma unroll(REG_BLOCK_W)
               for (int w = 0; w < REG_BLOCK_W; ++w) {
-                sum[h][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
+                sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
               }
 #ifdef DBG_SCONV
-              if (out_channel == 359 && h == 32) {
+              if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
                 float temp[VLEN];
-                _mm256_store_ps(temp, sum[h - hbegin][28/VLEN]);
-                printf(" + %g*%d:%g:%g", values[j], off, input[off + 32*(WIDTH + PAD) + 28], temp[28%VLEN]);
+                _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
+                printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
               }
 #endif
             }
@@ -378,7 +382,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _mm256_store_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+              _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
             }
           }
         } // for each register block
@@ -391,19 +395,19 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _mm256_load_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+              sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
             }
           }
 
           for (int j = jbegin; j < jend; ++j) {
-            w_v = _mm256_set1_ps(values[j]);
+            w_v = _MM_SET1(values[j]);
             off = colidx[j];
 
 #pragma unroll(WOUT%REG_BLOCK_H)
             for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
               for (int w = 0; w < REG_BLOCK_W; ++w) {
-                sum[h - hbegin][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
+                sum[h - hbegin][w] = _MM_FMADD(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
               }
             }
           }
@@ -412,7 +416,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _mm256_store_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+              _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
             }
           }
         } // remainder register block
@@ -436,7 +440,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            sum[h - hbegin][w] = _mm256_load_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+            sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
           }
         }
 
@@ -448,14 +452,14 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = 0; h < REG_BLOCK_H; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
+              sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
             }
 
 #ifdef DBG_SCONV
-            if (out_channel == 359 && h == 32) {
+            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
               float temp[VLEN];
-              _mm256_store_ps(temp, sum[h - hbegin][28/VLEN]);
-              printf(" + %g*%d:%g:%g", values[j], off, input[off + 32*(WIDTH + PAD) + 28], temp[28%VLEN]);
+              _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
+              printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
             }
 #endif
           }
@@ -466,12 +470,12 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           if (WIDTH%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _mm256_storeu_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
 
 #ifdef DBG_SCONV
-            if (out_channel == 359 && h == 32) {
-              printf(" = %g\n", output[(out_channel*WOUT + h)*WOUT + 28]);
+            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+              printf(" = %g\n", output[(out_channel*WOUT + h)*WOUT + COL_TO_DEBUG]);
             }
 #endif
           }
@@ -479,9 +483,9 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
             int w;
 #pragma unroll(REG_BLOCK_W - 1)
             for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-              _mm256_storeu_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
-            _mm256_maskstore_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+            _MM_MASK_STORE(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
@@ -494,7 +498,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            sum[h - hbegin][w] = _mm256_load_ps(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+            sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
           }
         }
 
@@ -506,7 +510,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
+              sum[h - hbegin][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
             }
           }
         }
@@ -516,16 +520,16 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           if (WIDTH%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _mm256_storeu_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
           }
           else {
             int w;
 #pragma unroll(REG_BLOCK_W - 1)
             for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-              _mm256_storeu_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
-            _mm256_maskstore_ps(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+            _MM_MASK_STORE(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
@@ -1972,7 +1976,7 @@ inline void caffe_cpu_sconv_default(
         for (int oc = 0; oc < out_channels; ++oc) {
           float sum = bias[oc];
 #ifdef DBG_SCONV
-          if (oc == 359 && output_row == 32 && output_col == 28) {
+          if (oc == CHANNEL_TO_DEBUG && output_row == ROW_TO_DEBUG && output_col == COL_TO_DEBUG) {
             printf("%g", sum);
           }
 #endif
@@ -1981,7 +1985,7 @@ inline void caffe_cpu_sconv_default(
             assert(in + colidx[j] >= input_padded && in + colidx[j] < input_padded + in_channels*(width + pad_w)*(height + pad_h) + pad_h*(width + 2*pad_w));
             sum += values[j]*in[colidx[j]];
 #ifdef DBG_SCONV
-            if (oc == 359 && output_row == 32 && output_col == 28) {
+            if (oc == CHANNEL_TO_DEBUG && output_row == ROW_TO_DEBUG && output_col == COL_TO_DEBUG) {
               printf(" + %g*%d:%g:%g", values[j], colidx[j], in[colidx[j]], sum);
             }
 #endif
@@ -1989,7 +1993,7 @@ inline void caffe_cpu_sconv_default(
 
           output[(oc*output_h + output_row)*output_w + output_col] = sum;
 #ifdef DBG_SCONV
-          if (oc == 359 && output_row == 32 && output_col == 28) {
+          if (oc == CHANNEL_TO_DEBUG && output_row == ROW_TO_DEBUG && output_col == COL_TO_DEBUG) {
             printf(" = %g\n", sum);
           }
 #endif
