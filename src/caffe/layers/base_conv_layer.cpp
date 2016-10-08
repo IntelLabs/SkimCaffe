@@ -71,6 +71,10 @@ void BaseConvolutionLayer<float>::WeightAlign(){
   //  nthread_groups = nthreads/2;
 #endif
 
+    if (nthreads%nthread_groups != 0) {
+      LOG(FATAL) << "OMP_NUM_THREADS must be a multiple of " << nthread_groups;
+    }
+
     assert(nthreads%nthread_groups == 0);
     int nthreads_per_group = nthreads/nthread_groups;
     if (nthread_groups != nthreads) {
