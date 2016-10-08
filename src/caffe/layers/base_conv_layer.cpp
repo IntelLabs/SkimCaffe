@@ -184,6 +184,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
         assert(conv_in_channels_/group_%col_block_size == 0);
 
         int ncolblocks = conv_in_channels_/col_block_size;
+        assert(ncolblocks >= 2);
         LOG(INFO) << "ncolblocks " << ncolblocks;
         weight_rowptr_blocked_.resize(ncolblocks);
         weight_colidx_blocked_.resize(ncolblocks);
