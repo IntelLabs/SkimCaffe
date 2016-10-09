@@ -19,7 +19,7 @@ InnerProductLayer<Dtype>::InnerProductLayer(const LayerParameter& param) :
     bottom_values_(NULL), bottom_j_(NULL), bottom_i_(NULL),
     top_values_(NULL), top_j_(NULL), top_i_(NULL),
     weight_values_(NULL), weight_j_(NULL), weight_i_(NULL),
-    bottom_transposed_(NULL), B_temp_global_(NULL), C_temp_global_(NULL),
+    bottom_transposed_(NULL),
     weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL)
 {
 
@@ -40,9 +40,6 @@ InnerProductLayer<Dtype>::~InnerProductLayer()
   free(weight_values_);
   free(weight_j_);
   free(weight_i_);
-
-  free(B_temp_global_);
-  free(C_temp_global_);
 
   free(weight_values_blocked_);
   free(weight_j_blocked_);
@@ -68,9 +65,6 @@ void InnerProductLayer<float>::WeightAlign(){
 	posix_memalign((void **)&weight_i_, 4096, sizeof(int)*(std::max(K_, N_) + 1));
 	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
 	posix_memalign((void **)&weight_values_, 4096, sizeof(float)*K_*N_);
-
-	posix_memalign((void **)&B_temp_global_, 4096, sizeof(float)*omp_get_max_threads()*4096);
-	posix_memalign((void **)&C_temp_global_, 4096, sizeof(float)*omp_get_max_threads()*4096);
 
 	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
@@ -102,36 +96,7 @@ void InnerProductLayer<float>::WeightAlign(){
     }
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
-    LOG(WARNING) << "SPGEMM mode is not supported yet";
-
-    MKL_INT job[] = {
-        0 /*dense->CSR*/,
-        0 /*0-based indexing in dense matrix */,
-        0 /*1-based CSR*/,
-        2 /* whole matrix*/,
-        K_*N_, /* nzmax */
-        1 /* generate a, i, and j */
-    };
-    MKL_INT info;
-
-    int m = transpose_ ? K_ : N_;
-    int n = transpose_ ? N_ : K_;
-
-    if (transpose_) {
-      mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
-    }
-    else {
-      float *weight_transposed;
-      posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
-      mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
-      mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
-      free(weight_transposed);
-    }
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
+    LOG(FATAL) << "SPGEMM mode is not supported yet";
   }
 
   posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
@@ -286,56 +251,7 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     total_files += M_;
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
-    float *A = layer2bottom["fc6"];
-
-    CSR B = layer2weight["fc6"];
-    CSR C = layer2weight["fc7"];
-
-    float *B_bias = layer2bias["fc6"];
-    float *C_bias = layer2bias["fc7"];
-
-    int flops = csrmultd_fused_flops(
-        A,
-        B.values, B.colidx, B.rowptr,
-        C.values, C.colidx, C.rowptr,
-        weight_values_, weight_j_, weight_i_,
-        B_bias, C_bias, this->blobs_[1]->cpu_data(),
-        top_data,
-        M_,
-        B.m, B.n, K_, N_,
-        B_temp_global_, C_temp_global_);
-
-    int cnt = 0;
-    for (int i = 0; i < B.m; ++i) {
-      if (B_bias[i] <= 0) ++cnt;
-    }
-    LOG(INFO) << "B_bias sparsity " << (double)cnt/B.m;
-    cnt = 0;
-    for (int i = 0; i < K_; ++i) {
-      if (C_bias[i] <= 0) ++cnt;
-    }
-    LOG(INFO) << "C_bias sparsity " << (double)cnt/K_;
-    cnt = 0;
-    for (int i = 0; i < N_; ++i) {
-      if (this->blobs_[1]->cpu_data()[i] <= 0) ++cnt;
-    }
-    LOG(INFO) << "D_bias sparsity " << (double)cnt/N_;
-
-    assert(C.n == K_);
-    double t = omp_get_wtime();
-    csrmultd_fused(
-        A,
-        B.values, B.colidx, B.rowptr,
-        C.values, C.colidx, C.rowptr,
-        weight_values_, weight_j_, weight_i_,
-        B_bias, C_bias, this->blobs_[1]->cpu_data(),
-        top_data,
-        M_,
-        B.m, B.n, K_, N_,
-        B_temp_global_, C_temp_global_);
-    t = omp_get_wtime() - t;
-
-    LOG(INFO) << "fused_spgemm takes " << t << " GF/s= " << (double)flops/t/1e9 << " flop-sparsity " << 1 - (double)flops/(2.*(M_*B.m*B.n + M_*C.m*C.n + M_*K_*N_));
+    LOG(FATAL) << "SPGEMM mode is not supported yet";
   }
   else {
     // activation_matrix * weight_matrix^T

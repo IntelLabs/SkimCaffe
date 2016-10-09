@@ -64,9 +64,6 @@ class InnerProductLayer : public Layer<Dtype> {
   int *weight_i_blocked_;
 
   Dtype *bottom_transposed_;
-
-  Dtype *B_temp_global_;
-  Dtype *C_temp_global_;
 };
 
 }  // namespace caffe

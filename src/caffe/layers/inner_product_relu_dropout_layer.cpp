@@ -7,12 +7,7 @@
 #include "caffe/layers/inner_product_relu_dropout_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/spgemm.hpp"
-#include "SpMP/CSR.hpp"
-#include "SpMP/reordering/BFSBipartite.hpp"
 
-std::map<std::string, CSR> layer2weight;
-std::map<std::string, float *> layer2bottom;
-std::map<std::string, float *> layer2bias;
 extern std::map<std::string, unsigned long long> total_conv_cycles;
 extern std::map<std::string, double> total_conv_flops;
 extern int total_files;
@@ -27,7 +22,7 @@ InnerProductReLUDropoutLayer<Dtype>::InnerProductReLUDropoutLayer(const LayerPar
     bottom_values_(NULL), bottom_j_(NULL), bottom_i_(NULL),
     top_values_(NULL), top_j_(NULL), top_i_(NULL),
     weight_values_(NULL), weight_j_(NULL), weight_i_(NULL),
-    bottom_transposed_(NULL), spgemm_buf_(NULL),
+    bottom_transposed_(NULL),
     weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL)
 {
 
@@ -40,7 +35,6 @@ InnerProductReLUDropoutLayer<Dtype>::~InnerProductReLUDropoutLayer()
   free(bottom_j_);
   free(bottom_i_);
   free(bottom_transposed_);
-  free(spgemm_buf_);
 
   free(top_values_);
   free(top_j_);
@@ -133,118 +127,14 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 
       csr.m = N_;
       csr.n = K_;
-
-      SpMP::CSR A(csr.m, csr.n, nnz);
-      nnz = 0;
-      A.rowptr[0] = 0;
-      for (int i = 0; i < N_; ++i) {
-        for (int j = 0; j < K_; ++j) {
-          float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-          if (v != 0) {
-            A.colidx[nnz] = j;
-            A.values[nnz] = v;
-            ++nnz;
-          }
-        }
-        A.rowptr[i + 1] = nnz;
-      }
-
-      SpMP::CSR *AT = A.transpose();
-      int *rowPerm = new int[csr.m], *rowInversePerm = new int[csr.m];
-      int *colPerm = new int[csr.n], *colInversePerm = new int[csr.n];
-      bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
-      FREE(A.diagptr);
-      SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
-      SpMP::CSR *ATReordered = AReordered->transpose();
-
-      LOG(INFO) << "Average width of " << csr.m << " x " << csr.n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
-      LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
-
-      delete[] rowPerm;
-      delete[] rowInversePerm;
-      delete[] colPerm;
-      delete[] colInversePerm;
-      delete AT;
-      delete AReordered;
-      delete ATReordered;
     }
     else {
       LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";
     }
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
-    LOG(WARNING) << "SPGEMM mode is not supported yet";
-    if (this->layer_param_.relu_param().negative_slope() != 0) {
-      LOG(FATAL) << "SPGEMM mode only works with ReLU using 0 negative slop";
-    }
-
-    MKL_INT job[] = {
-        0 /*dense->CSR*/,
-        0 /*0-based indexing in dense matrix */,
-        0 /*0-based CSR*/,
-        2 /* whole matrix*/,
-        K_*N_, /* nzmax */
-        1 /* generate a, i, and j */
-    };
-    MKL_INT info;
-
-	  int m = transpose_ ? K_ : N_;
-	  int n = transpose_ ? N_ : K_;
-
-	  if (transpose_) {
-      mkl_sdnscsr(job, &m, &n, this->blobs_[0]->mutable_cpu_data(), &n, weight_values_, weight_j_, weight_i_, &info);
-	  }
-	  else {
-      float *weight_transposed;
-      posix_memalign((void **)&weight_transposed, 4096, sizeof(float)*K_*N_);
-      mkl_somatcopy('R', 'T', m, n, 1, this->blobs_[0]->mutable_cpu_data(), n, weight_transposed, m);
-      mkl_sdnscsr(job, &n, &m, weight_transposed, &m, weight_values_, weight_j_, weight_i_, &info);
-      free(weight_transposed);
-	  }
-
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-
-    csr.m = m;
-    csr.n = n;
-
-    SpMP::CSR A(m, n, weight_i_[m]);
-    for (int i = 0; i <= m; ++i) {
-      A.rowptr[i] = weight_i_[i];
-    }
-    for (int i = 0; i < weight_i_[m]; ++i) {
-      A.colidx[i] = weight_j_[i];
-    }
-
-    SpMP::CSR *AT = A.transpose();
-    int *rowPerm = new int[m], *rowInversePerm = new int[m];
-    int *colPerm = new int[n], *colInversePerm = new int[n];
-    bfsBipartite(A, *AT, rowPerm, rowInversePerm, colPerm, colInversePerm);
-    FREE(A.diagptr);
-    SpMP::CSR *AReordered = A.permute(colPerm, rowInversePerm);
-    SpMP::CSR *ATReordered = AReordered->transpose();
-
-    LOG(INFO) << "Average width of " << m << " x " << n << " matrix = " << A.getAverageWidth() << " " << AT->getAverageWidth();
-    LOG(INFO) << "Average width after reordering = " << AReordered->getAverageWidth() << " " << ATReordered->getAverageWidth();
-
-    delete[] rowPerm;
-    delete[] rowInversePerm;
-    delete[] colPerm;
-    delete[] colInversePerm;
-    delete AT;
-    delete AReordered;
-    delete ATReordered;
+    LOG(FATAL) << "SPGEMM mode is not supported yet";
 	}
-
-  // save weights in sparse matrix format and bias so that fc8 can do fused SpGEMM
-  // experimental implementation only works for AlexNet and when fc8 also uses SPGEMM mode
-  layer2weight[layerparam.name()] = csr;
-  layer2bias[layerparam.name()] = this->blobs_[1]->mutable_cpu_data();
-
-  posix_memalign((void **)&spgemm_buf_, 4096, sizeof(float)*omp_get_max_threads()*N_);
 
   posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
   posix_memalign((void **)&bottom_j_, 4096, sizeof(int)*M_*K_);
@@ -354,8 +244,6 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
   float* top_data = top[0]->mutable_cpu_data();
   float* weight = this->blobs_[0]->mutable_cpu_data();
 
-  layer2bottom[this->layer_param().name()] = bottom_data;
-
   bool PRINT_FEATURE_SPARSITY = false;
   if (PRINT_FEATURE_SPARSITY) {
     int cnt = 0;
@@ -403,42 +291,7 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     total_files += M_;
   }
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
-    MKL_INT job[] = {
-        0 /*dense->CSR*/,
-        0 /*0-based indexing in dense matrix */,
-        0 /*0-based CSR*/,
-        2 /* whole matrix*/,
-        M_*K_, /* nzmax */
-        1 /* generate a, i, and j */
-    };
-    MKL_INT info;
-
-    mkl_sdnscsr(job, &M_, &K_, bottom_data, &K_, bottom_values_, bottom_j_, bottom_i_, &info);
-    if(info) {
-      LOG(FATAL)<<"The routine is interrupted processing the "<<
-          info<<"-th row "
-          <<"because there is no space in the arrays acsr and ja according to the value nzmax.";
-    }
-
-    int flops = spgemm_flops(
-        bottom_values_, bottom_j_, bottom_i_,
-        weight_values_, weight_j_, weight_i_,
-        M_);
-    LOG(INFO) << "flop-sparsity " << 1 - (double)flops/(2.*M_*N_*K_);
-
-//    return; // uncomment this line when using fused SpGEMM in fc8 for AlexNet
-
-    int nnz;
-    double t = omp_get_wtime();
-    csrmultd(
-        bottom_values_, bottom_j_, bottom_i_,
-        weight_values_, weight_j_, weight_i_,
-        this->blobs_[1]->cpu_data(),
-        top_data,
-        M_, N_);
-
-    t = omp_get_wtime() - t;
-    LOG(INFO) << "spgemm takes " << t << " GF/s= " << (double)flops/t/1e9 << " nnz-sparsity " << 1 - (double)nnz/(M_*N_);
+    LOG(FATAL) << "SPGEMM mode is not supported yet";
   }
   else
   {

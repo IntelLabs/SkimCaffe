@@ -25,7 +25,6 @@ double get_cpu_freq();
 #include "caffe/caffe.hpp"
 #include "caffe/util/signal_handler.h"
 #include "caffe/util/math_functions_intel.hpp"
-#include "caffe/util/conv.hpp"
 
 using caffe::Blob;
 using caffe::Caffe;

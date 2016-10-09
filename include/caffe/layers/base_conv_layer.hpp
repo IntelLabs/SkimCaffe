@@ -7,12 +7,7 @@
 #include "caffe/layer.hpp"
 #include "caffe/proto/caffe.pb.h"
 #include "caffe/util/im2col.hpp"
-#ifdef USE_SCONV
-#include <SpMP/CSR.hpp>
-#include <SpMP/reordering/BFSBipartite.hpp>
-#include <SpMP/test/test.hpp>
-#include <SpMP/synk/barrier.hpp>
-#endif
+
 namespace caffe {
 
 /**
@@ -200,7 +195,6 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   Dtype *weight_interleaved_; /**< JSP: interleave 8 output channels to vectorize over output channels for direct dense convolution of conv1 */
   Dtype *input_padded_;
   Dtype *output_scratch_;
-  Dtype *input_aligned_;
   //Blob<Dtype> connectivity_mask_;//0.0 means the connection is off, 1.0 means ON
 
   /** weight sparse matrix */
@@ -212,11 +206,6 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   vector<int *> weight_rowptr_blocked_;
   vector<int *> weight_colidx_blocked_;
   vector<Dtype *> weight_values_blocked_;
-
-  /** column blocked weight sparse matrix used for sconv345_split that involves fewer unaligned loads */
-  vector<int *> weight_rowptr_split_;
-  vector<int *> weight_colidx_split_;
-  vector<Dtype *> weight_values_split_;
 };
 
 }  // namespace caffe

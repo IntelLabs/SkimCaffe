@@ -64,7 +64,6 @@ class InnerProductReLUDropoutLayer : public Layer<Dtype> {
   int *weight_i_blocked_;
 
   Dtype *bottom_transposed_;
-  Dtype *spgemm_buf_;
 };
 
 }  // namespace caffe
