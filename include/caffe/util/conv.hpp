@@ -101,136 +101,29 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
   int c_end = std::min(c_begin + c_per_thread, out_channels/OC_BLOCK);
   const int ALIGNED_W = (WIDTH + 16 - 1)/16*16;
 
-#if !defined(__AVX512F__) && defined(__AVX2__)
-  const int REG_BLOCK_SIZE = 14; // use at most 14 SIMD registers
+#ifdef __AVX512F__
+  const int REG_BLOCK_SIZE = 30; // use at most 30 SIMD registers out of 32
+#else
+  const int REG_BLOCK_SIZE = 14; // use at most 14 SIMD registers out of 16
+#endif
+
   const int REG_BLOCK_W = (WIDTH + VLEN - 1)/VLEN;
-  const int REG_BLOCK_H = REG_BLOCK_SIZE/REG_BLOCK_W;
+  assert(REG_BLOCK_W <= REG_BLOCK_SIZE);
+  const int REG_BLOCK_H = WIDTH < REG_BLOCK_SIZE/REG_BLOCK_W ? WIDTH : REG_BLOCK_SIZE/REG_BLOCK_W;
   // WIDTH = 13 (AlexNet conv3-5), AVX2 : REG_BLOCK_W = 2, REG_BLOCK_H = 7, ALIGNED_W = 16
   // WIDTH = 56 (GoogLeNet), AVX2 : REG_BLOCK_W = 7, REG_BLOCK_H = 2, ALIGNED_W = 64
 
+#ifdef __AVX512F__
+  __mmask16 mask_v = (1 << (WIDTH%VLEN)) - 1;
+#else
   __declspec(aligned(64)) int mask_temp[VLEN] = { 0 };
   for (int i = 0; i < WIDTH%VLEN; ++i) {
     mask_temp[i] = -1;
   }
-  __m256i mask_v = _mm256_load_si256((__m256i *)mask_temp);
+  SIMDITYPE mask_v = _MM_LOAD_SI((SIMDITYPE *)mask_temp);
 #endif
 
   for (int oc_begin = c_begin*OC_BLOCK; oc_begin < c_end*OC_BLOCK; oc_begin += OC_BLOCK) {
-#ifdef __AVX512F__
-    __m512 sum[WOUT];
-
-    const int *rowptr = rowptr_blocked[0];
-    const int *colidx = colidx_blocked[0];
-    const float *values = values_blocked[0];
-
-    int hbegin = 0, hend = WOUT;
-
-    for (int oc = oc_begin; oc < oc_begin + OC_BLOCK; ++oc) {
-      __m512 bias_v = _mm512_set1_ps(bias[oc]);
-
-#pragma unroll(13)
-      for (int h = hbegin; h < hend; ++h) {
-        sum[h - hbegin] = bias_v;
-      }
-
-      int jbegin = rowptr[oc];
-      int jend = rowptr[oc + 1];
-
-#define W_PREFETCH_DISTANCE (1)
-
-//      _mm_prefetch((const char *)(values + rowptr[out_channel + W_PREFETCH_DISTANCE]), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(values + rowptr[out_channel + W_PREFETCH_DISTANCE] + 16), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(colidx + rowptr[out_channel + W_PREFETCH_DISTANCE]), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(colidx + rowptr[out_channel + W_PREFETCH_DISTANCE] + 16), _MM_HINT_T1);
-
-      for (int j = jbegin; j < jend; ++j) {
-        __m512 c = _mm512_set1_ps(values[j]);
-        int off = colidx[j];
-
-#pragma unroll(13)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin] = _mm512_fmadd_ps(c, _mm512_loadu_ps(input + off + h*(WIDTH + PAD)), sum[h - hbegin]);
-        }
-      }
-
-#pragma unroll(13)
-      for (int h = hbegin; h < hend; ++h) {
-        _mm512_store_ps(scratch + ((oc - oc_begin)*WOUT + h)*16, sum[h - hbegin]);
-      }
-    } // for each oc channel
-
-    for (int b = 1; b < ncolblocks - 1; ++b) {
-      rowptr = rowptr_blocked[b];
-      colidx = colidx_blocked[b];
-      values = values_blocked[b];
-
-      hbegin = 0, hend = 13;
-      for (int oc = oc_begin; oc < oc_begin + OC_BLOCK; ++oc) {
-        int jbegin = rowptr[oc];
-        int jend = rowptr[oc + 1];
-
-#pragma unroll(13)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin] = _mm512_load_ps(scratch + ((oc - oc_begin)*WOUT + h)*16);
-          //_mm_prefetch((const char *)(scratch + ((oc - oc_begin + 1)*WOUT + h)*16), _MM_HINT_T0);
-          _mm_prefetch((const char *)(values + jend + (h - hbegin)*16), _MM_HINT_T0);
-          _mm_prefetch((const char *)(colidx + jend + (h - hbegin)*16), _MM_HINT_T0);
-        }
-
-        for (int j = jbegin; j < jend; ++j) {
-          __m512 c = _mm512_set1_ps(values[j]);
-          int off = colidx[j];
-
-#pragma unroll(13)
-          for (int h = hbegin; h < hend; ++h) {
-            sum[h - hbegin] = _mm512_fmadd_ps(c, _mm512_loadu_ps(input + off + h*(WIDTH + PAD)), sum[h - hbegin]);
-          }
-        }
-
-#pragma unroll(13)
-        for (int h = hbegin; h < hend; ++h) {
-          _mm512_store_ps(scratch + ((oc - oc_begin)*WOUT + h)*16, sum[h - hbegin]);
-        }
-      } // for each out channel
-    } // for each col block
-
-    rowptr = rowptr_blocked[ncolblocks - 1];
-    colidx = colidx_blocked[ncolblocks - 1];
-    values = values_blocked[ncolblocks - 1];
-
-    hbegin = 0; hend = 13;
-
-    for (int oc = oc_begin; oc < oc_begin + OC_BLOCK; ++oc) {
-#pragma unroll(13)
-      for (int h = hbegin; h < hend; ++h) {
-        sum[h - hbegin] = _mm512_load_ps(scratch + ((oc - oc_begin)*WOUT + h)*16);
-        _mm_prefetch((const char *)(output + oc*WOUT*WOUT + h*16), _MM_HINT_T0);
-      }
-
-      int jbegin = rowptr[oc];
-      int jend = rowptr[oc + 1];
-
-//      _mm_prefetch((const char *)(values + rowptr[oc + W_PREFETCH_DISTANCE]), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(values + rowptr[oc + W_PREFETCH_DISTANCE] + 16), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(colidx + rowptr[oc + W_PREFETCH_DISTANCE]), _MM_HINT_T1);
-//      _mm_prefetch((const char *)(colidx + rowptr[oc + W_PREFETCH_DISTANCE] + 16), _MM_HINT_T1);
-
-      for (int j = jbegin; j < jend; ++j) {
-        __m512 c = _mm512_set1_ps(values[j]);
-        int off = colidx[j];
-
-#pragma unroll(13)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin] = _mm512_fmadd_ps(c, _mm512_loadu_ps(input + off + h*(WIDTH + PAD)), sum[h - hbegin]);
-        }
-      }
-
-#pragma unroll(13)
-      for (int h = hbegin; h < hend; ++h) {
-        _mm512_mask_storeu_ps(output + (oc*WOUT + h)*WOUT, 0x1fff, sum[h - hbegin]);
-      }
-    }
-#elif defined(__AVX2__)
     SIMDFPTYPE sum[REG_BLOCK_H][REG_BLOCK_W];
     SIMDFPTYPE w_v;
     int off;
@@ -270,26 +163,29 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           }
         }
 
-        for (int j = jbegin; j < jend; ++j) {
-          w_v = _MM_SET1(values[j]);
-          off = colidx[j];
-
-#pragma unroll(REG_BLOCK_H)
-          for (int h = 0; h < REG_BLOCK_H; ++h) { // by some reason, iterating from hbegin to hend prevents icc from unrolling
-#pragma unroll(REG_BLOCK_W)
-            for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
-            }
-
-#ifdef DBG_SCONV
-            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-              float temp[VLEN];
-              _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
-              printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
-            }
-#endif
-          }
+#define SCONV_3x3_INNER_PROD \
+        for (int j = jbegin; j < jend; ++j) { \
+          w_v = _MM_SET1(values[j]); \
+          off = colidx[j]; \
+ \
+_Pragma("unroll(REG_BLOCK_H)") \
+          for (int h = 0; h < REG_BLOCK_H; ++h) { /* by some reason, iterating from hbegin to hend prevents icc from unrolling */ \
+_Pragma("unroll(REG_BLOCK_W") \
+            for (int w = 0; w < REG_BLOCK_W; ++w) { \
+              sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]); \
+            } \
+ \
+/*#ifdef DBG_SCONV \
+            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) { \
+              float temp[VLEN]; \
+              _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]); \
+              printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]); \
+            } \
+#endif*/ \
+          } \
         }
+
+        SCONV_3x3_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
@@ -313,18 +209,21 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           }
         }
 
-        for (int j = jbegin; j < jend; ++j) {
-          w_v = _MM_SET1(values[j]);
-          off = colidx[j];
-
-#pragma unroll(WOUT%REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-#pragma unroll(REG_BLOCK_W)
-            for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _MM_FMADD(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
-            }
-          }
+#define SCONV_3x3_INNER_PROD_REMAINDER \
+        for (int j = jbegin; j < jend; ++j) { \
+          w_v = _MM_SET1(values[j]); \
+          off = colidx[j]; \
+ \
+_Pragma("unroll(WOUT%REG_BLOCK_H)") \
+          for (int h = hbegin; h < hend; ++h) { \
+_Pragma("unroll(REG_BLOCK_W)") \
+            for (int w = 0; w < REG_BLOCK_W; ++w) { \
+              sum[h - hbegin][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]); \
+            } \
+          } \
         }
+
+        SCONV_3x3_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
@@ -358,25 +257,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
             }
           }
 
-          for (int j = jbegin; j < jend; ++j) {
-            w_v = _mm256_set1_ps(values[j]);
-            off = colidx[j];
-
-#pragma unroll(REG_BLOCK_H)
-            for (int h = 0; h < REG_BLOCK_H; ++h) {
-#pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
-              }
-#ifdef DBG_SCONV
-              if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-                float temp[VLEN];
-                _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
-                printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
-              }
-#endif
-            }
-          }
+          SCONV_3x3_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
           for (int h = hbegin; h < hend; ++h) {
@@ -399,18 +280,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
             }
           }
 
-          for (int j = jbegin; j < jend; ++j) {
-            w_v = _MM_SET1(values[j]);
-            off = colidx[j];
-
-#pragma unroll(WOUT%REG_BLOCK_H)
-            for (int h = hbegin; h < hend; ++h) {
-#pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                sum[h - hbegin][w] = _MM_FMADD(w_v, _mm256_loadu_ps(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
-              }
-            }
-          }
+          SCONV_3x3_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
           for (int h = hbegin; h < hend; ++h) {
@@ -444,26 +314,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           }
         }
 
-        for (int j = jbegin; j < jend; ++j) {
-          w_v = _mm256_set1_ps(values[j]);
-          off = colidx[j];
-
-#pragma unroll(REG_BLOCK_H)
-          for (int h = 0; h < REG_BLOCK_H; ++h) {
-#pragma unroll(REG_BLOCK_W)
-            for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]);
-            }
-
-#ifdef DBG_SCONV
-            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-              float temp[VLEN];
-              _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]);
-              printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]);
-            }
-#endif
-          }
-        }
+        SCONV_3x3_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
@@ -502,18 +353,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           }
         }
 
-        for (int j = jbegin; j < jend; ++j) {
-          w_v = _mm256_set1_ps(values[j]);
-          off = colidx[j];
-
-#pragma unroll(WOUT%REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-#pragma unroll(REG_BLOCK_W)
-            for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]);
-            }
-          }
-        }
+        SCONV_3x3_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
@@ -534,150 +374,6 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
         }
       } // remainder register block
     } // for each output channel
-#else
-    // !defined(__AVX512__) && !defined(__AVX2__)
-    __m128 sum[3][4]; // [3][4]
-
-    const int *rowptr = rowptr_blocked[0];
-    const int *colidx = colidx_blocked[0];
-    const float *values = values_blocked[0];
-
-    for (int oc = oc_begin; oc < oc_begin + OC_BLOCK; ++oc) {
-      for (int hbegin = 0; hbegin < 12; hbegin += 3) {
-        int hend = hbegin + 3;
-
-#pragma unroll(3)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin][0] = _mm_set1_ps(bias[oc]);
-          sum[h - hbegin][1] = _mm_set1_ps(bias[oc]);
-          sum[h - hbegin][2] = _mm_set1_ps(bias[oc]);
-          sum[h - hbegin][3] = _mm_set1_ps(bias[oc]);
-        }
-
-        for (int j = rowptr[oc]; j < rowptr[oc + 1]; ++j) {
-          __m128 w_v = _mm_set1_ps(values[j]);
-          int off = colidx[j];
-
-#pragma unroll(3)
-          for (int h = hbegin; h < hend; ++h) {
-            sum[h - hbegin][0] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD))), sum[h - hbegin][0]);
-            sum[h - hbegin][1] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 4)), sum[h - hbegin][1]);
-            sum[h - hbegin][2] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 8)), sum[h - hbegin][2]);
-            sum[h - hbegin][3] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 12)), sum[h - hbegin][3]);
-          }
-        }
-
-#pragma unroll(3)
-        for (int h = hbegin; h < hend; ++h) {
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT, sum[h - hbegin][0]);
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 4, sum[h - hbegin][1]);
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 8, sum[h - hbegin][2]);
-          ((int *)output)[(oc*WOUT + h)*WOUT + 12] = _mm_extract_ps(sum[h - hbegin][3], 0);
-        }
-      }
-
-      int hbegin = 12, hend = 13;
-#pragma unroll(1)
-      for (int h = hbegin; h < hend; ++h) {
-        sum[h - hbegin][0] = _mm_set1_ps(bias[oc]);
-        sum[h - hbegin][1] = _mm_set1_ps(bias[oc]);
-        sum[h - hbegin][2] = _mm_set1_ps(bias[oc]);
-        sum[h - hbegin][3] = _mm_set1_ps(bias[oc]);
-      }
-
-      for (int j = rowptr[oc]; j < rowptr[oc + 1]; ++j) {
-        __m128 w_v = _mm_set1_ps(values[j]);
-        int off = colidx[j];
-
-#pragma unroll(1)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin][0] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD))), sum[h - hbegin][0]);
-          sum[h - hbegin][1] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 4)), sum[h - hbegin][1]);
-          sum[h - hbegin][2] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 8)), sum[h - hbegin][2]);
-          sum[h - hbegin][3] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 12)), sum[h - hbegin][3]);
-        }
-      }
-
-#pragma unroll(1)
-      for (int h = hbegin; h < hend; ++h) {
-        _mm_storeu_ps(output + (oc*WOUT + h)*WOUT, sum[h - hbegin][0]);
-        _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 4, sum[h - hbegin][1]);
-        _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 8, sum[h - hbegin][2]);
-        ((int *)output)[(oc*WOUT + h)*WOUT + 12] = _mm_extract_ps(sum[h - hbegin][3], 0);
-      }
-    }
-
-    for (int b = 1; b < ncolblocks; ++b) {
-      rowptr = rowptr_blocked[b];
-      colidx = colidx_blocked[b];
-      values = values_blocked[b];
-
-      for (int oc = oc_begin; oc < oc_begin + OC_BLOCK; ++oc) {
-        for (int hbegin = 0; hbegin < 12; hbegin += 3) {
-          int hend = hbegin + 3;
-
-#pragma unroll(3)
-          for (int h = hbegin; h < hend; ++h) {
-            sum[h - hbegin][0] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT);
-            sum[h - hbegin][1] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 4);
-            sum[h - hbegin][2] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 8);
-            sum[h - hbegin][3] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 12);
-          }
-
-          for (int j = rowptr[oc]; j < rowptr[oc + 1]; ++j) {
-            __m128 w_v = _mm_set1_ps(values[j]);
-            int off = colidx[j];
-
-#pragma unroll(3)
-            for (int h = hbegin; h < hend; ++h) {
-              sum[h - hbegin][0] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD))), sum[h - hbegin][0]);
-              sum[h - hbegin][1] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 4)), sum[h - hbegin][1]);
-              sum[h - hbegin][2] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 8)), sum[h - hbegin][2]);
-              sum[h - hbegin][3] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 12)), sum[h - hbegin][3]);
-            }
-          }
-
-#pragma unroll(3)
-          for (int h = hbegin; h < hend; ++h) {
-            _mm_storeu_ps(output + (oc*WOUT + h)*WOUT, sum[h - hbegin][0]);
-            _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 4, sum[h - hbegin][1]);
-            _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 8, sum[h - hbegin][2]);
-            ((int *)output)[(oc*WOUT + h)*WOUT + 12] = _mm_extract_ps(sum[h - hbegin][3], 0);
-          }
-        }
-
-        int hbegin = 12, hend = 13;
-#pragma unroll(1)
-        for (int h = hbegin; h < hend; ++h) {
-          sum[h - hbegin][0] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT);
-          sum[h - hbegin][1] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 4);
-          sum[h - hbegin][2] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 8);
-          sum[h - hbegin][3] = _mm_loadu_ps(output + (oc*WOUT + h)*WOUT + 12);
-        }
-
-        for (int j = rowptr[oc]; j < rowptr[oc + 1]; ++j) {
-          __m128 w_v = _mm_set1_ps(values[j]);
-          int off = colidx[j];
-
-#pragma unroll(1)
-          for (int h = hbegin; h < hend; ++h) {
-            sum[h - hbegin][0] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD))), sum[h - hbegin][0]);
-            sum[h - hbegin][1] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 4)), sum[h - hbegin][1]);
-            sum[h - hbegin][2] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 8)), sum[h - hbegin][2]);
-            sum[h - hbegin][3] = _mm_add_ps(_mm_mul_ps(w_v, _mm_loadu_ps(input + off + h*(WIDTH + PAD) + 12)), sum[h - hbegin][3]);
-          }
-        }
-
-#pragma unroll(1)
-        for (int h = hbegin; h < hend; ++h) {
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT, sum[h - hbegin][0]);
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 4, sum[h - hbegin][1]);
-          _mm_storeu_ps(output + (oc*WOUT + h)*WOUT + 8, sum[h - hbegin][2]);
-          ((int *)output)[(oc*WOUT + h)*WOUT + 12] = _mm_extract_ps(sum[h - hbegin][3], 0);
-        }
-      } // for each oc
-    } // for each col block
-#endif
   }
 
   conv_cycles_of_this_batch[tid*16] += __rdtsc() - t;
