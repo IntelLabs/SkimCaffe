@@ -13,7 +13,7 @@
 #include <cstring>
 #include <cmath>
 
-#include "../../include/caffe/util/conv.hpp"
+#include "../../include/caffe/util/sconv.hpp"
 #include "../../include/caffe/util/spgemm.hpp"
 #include "SpMP/CSR.hpp"
 #include <mkl.h>
