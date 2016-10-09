@@ -5,6 +5,7 @@
 
 #define VLEN (16)
 #define SIMDFPTYPE __m512
+#define SIMDITYPE __m512i
 
 #define _MM_SET1(a) _mm512_set1_ps(a)
 #define _MM_FMADD(a, b, c) _mm512_fmadd_ps(a, b, c)
@@ -24,6 +25,7 @@
 
 #define VLEN (8)
 #define SIMDFPTYPE __m256
+#define SIMDITYPE __m256i
 
 #define _MM_SET1(a) _mm256_set1_ps(a)
 #define _MM_FMADD(a, b, c) _mm256_fmadd_ps(a, b, c)
@@ -43,6 +45,7 @@
 
 #define VLEN (4)
 #define SIMDFPTYPE __m128
+#define SIMDITYPE __m128i
 
 #define _MM_SET1(a) _mm_set1_ps(a)
 #define _MM_FMADD(a, b, c) _mm_add_ps(_mm_mul_ps(a, b), c)
