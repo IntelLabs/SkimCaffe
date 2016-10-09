@@ -14,7 +14,7 @@
 #include "caffe/common.hpp"
 #include "caffe/util/math_functions_intel.hpp"
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
-#include "caffe/util/conv.hpp"
+#include "caffe/util/sconv.hpp"
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, pool_cycle;
 
@@ -1111,7 +1111,7 @@ static void __attribute__((noinline)) sconv2_overfeat(
 template<>
 void caffe_cpu_sconv(
     // input features
-    const float *input_padded, const float *input, int in_channels,
+    const float *input_padded, int in_channels,
     int height, int width,
     int pad_h, int pad_w,
     int stride_h, int stride_w,
@@ -1121,20 +1121,14 @@ void caffe_cpu_sconv(
     int kernel_h, int kernel_w,
     const int **rowptr_blocked, const int **colidx_blocked, const float **values_blocked,
     int ncolblocks,
-//    const int *blockptr, const int *kidx, const float *values_colmajor,
-//    float *input_scratch, float *output_colmajor_scratch,
     // bias (for the case when bias is fused with convolution)
-    const float *bias, const float *bias_multiplier,
+    const float *bias,
     // pooling (for the case when pooling is fused with convolution)
     float *pool_top, int *mask,
     // output features
     float *output,
     int out_channels,
-    float *output_scratch, int col_major_ic_block,
-    const float *input_aligned,
-    const int *rowptr_split,
-    const int *colidx_split,
-    const float *values_split)
+    float *output_scratch)
 {
   const int output_h = (height + 2 * pad_h -
       (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;

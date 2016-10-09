@@ -12,7 +12,7 @@
 #include "caffe/util/math_functions_intel.hpp"
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
 #include "caffe/layers/conv_relu_pool_layer.hpp"
-#include "caffe/util/conv.hpp"
+#include "caffe/util/sconv.hpp"
 #include "SpMP/CSR.hpp"
 #include "SpMP/reordering/BFSBipartite.hpp"
 
@@ -1064,7 +1064,6 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
         caffe_cpu_sconv<float>(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
-            input + conv_in_channels_/group_ * g * height * width,
             conv_in_channels_/group_,
             height, width,
             pad_h, pad_w,
@@ -1076,17 +1075,12 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
             (const float **)(&weight_values_blocked_[0] + g*ncolblock),
             ncolblock,
-//            NULL, NULL, NULL,
-//            input_scratch_, output_colmajor_scratch_,
-            this->blobs_[1]->cpu_data(), bias_multiplier_.cpu_data(),
+            this->blobs_[1]->cpu_data(),
             ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->mutable_cpu_data() + ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g),
             ((ConvolutionReLUPoolLRNLayer<float> *)this)->max_idx_.mutable_cpu_data() + ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g),
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
-            col_major_ic_block,
-            input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
-            weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
 		  }
 		  else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5 && dilation_h == 1 && dilation_w == 1) {
 		    // 2nd layer of OverFeat fused with bias term and pooling
@@ -1099,7 +1093,6 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
         caffe_cpu_sconv<float>(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
-            input + conv_in_channels_/group_ * g * height * width,
             conv_in_channels_/group_,
             height, width,
             pad_h, pad_w,
@@ -1111,17 +1104,12 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
             (const float **)(&weight_values_blocked_[0] + g*ncolblock),
             ncolblock,
-//            NULL, NULL, NULL,
-//            input_scratch_, output_colmajor_scratch_,
-            bias, bm,
+            bias,
             pool_top,
             mask,
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
-            col_major_ic_block,
-            input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
-            weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
 		  }
 		  else {
 #ifdef VECTORIZE_OVER_INPUTS
@@ -1145,7 +1133,6 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 		    {
           caffe_cpu_sconv<float>(
               input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
-              input + conv_in_channels_/group_ * g * height * width,
               conv_in_channels_/group_,
               height, width,
               pad_h, pad_w,
@@ -1157,16 +1144,11 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
               (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
               (const float **)(&weight_values_blocked_[0] + g*ncolblock),
               ncolblock,
-//              &weight_blockptr_colmajor_[g][0], &weight_kidx_colmajor_[g][0], &weight_values_colmajor_[g][0],
-//              input_scratch_, output_colmajor_scratch_,
-              this->blobs_[1]->cpu_data(), bias_multiplier_.cpu_data(),
+              this->blobs_[1]->cpu_data(),
               NULL, NULL,
               output + output_offset_ * g,
               M,
-              output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16),
-              col_major_ic_block,
-              input_aligned + conv_in_channels_/group_ * g * (height + pad_h) * 16,
-              weight_rowptr_split_[g], weight_colidx_split_[g], weight_values_split_[g]);
+              output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
 		    }
 		  }
 
