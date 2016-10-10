@@ -325,10 +325,14 @@ else
 	COMMON_FLAGS += -DNDEBUG -O3
 endif
 
-ifeq ($(KNL), 1)
-  CXXFLAGS += -xMIC-AVX512
+ifeq ($(SSE), 1)
+    CXXFLAGS += -xSSE4.2
 else
-  CXXFLAGS += -xHost
+  ifeq ($(KNL), 1)
+    CXXFLAGS += -xMIC-AVX512
+  else
+    CXXFLAGS += -xHost
+  endif
 endif
 
 # cuDNN acceleration configuration.
