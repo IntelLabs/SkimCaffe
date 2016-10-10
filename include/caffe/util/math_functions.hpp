@@ -252,6 +252,9 @@ template <typename Dtype>
 void caffe_gpu_zerout(void * mutable_gpu_data, int count, Dtype th);
 
 template <typename Dtype>
+void caffe_gpu_zerout(int count, const Dtype *x, Dtype *y, Dtype th);
+
+template <typename Dtype>
 void caffe_gpu_shrinkage(void * mutable_gpu_data, int count, Dtype th);
 
 template <typename Dtype>

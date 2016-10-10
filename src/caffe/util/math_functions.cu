@@ -175,15 +175,81 @@ __global__ void zerout_kernel(void * mutable_gpu_data, int count, Dtype thre){
 	}
 }
 
+template  <typename Dtype>
+__global__ void zerout_kernel(int count, const Dtype *x, Dtype *y, Dtype thre){
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+	while(tid<count){
+		if(x[tid]<=thre && x[tid]>=(-thre)){
+			y[tid] = 0;
+		}
+    else {
+      y[tid] = x[tid];
+    }
+		tid += gridDim.x*blockDim.x;
+	}
+}
+
 template <typename Dtype>
 void caffe_gpu_zerout(void * mutable_gpu_data, const int count, Dtype th){
-	zerout_kernel<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(mutable_gpu_data,  count,  th);
+	zerout_kernel<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, (Dtype *)mutable_gpu_data, (Dtype *)mutable_gpu_data, th);
+}
+
+template <typename Dtype>
+void caffe_gpu_zerout(int count, const Dtype *x, Dtype *y, Dtype thre){
+	zerout_kernel<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, x, y, thre);
 }
 
 template void caffe_gpu_zerout<int>(void * mutable_gpu_data, const int count, int th);
 template void caffe_gpu_zerout<unsigned int>(void * mutable_gpu_data, const int count, unsigned int th);
 template void caffe_gpu_zerout<float>(void * mutable_gpu_data, const int count, float th);
 template void caffe_gpu_zerout<double>(void * mutable_gpu_data, const int count, double th);
+
+template void caffe_gpu_zerout<int>(int count, const int *x, int *y, int th);
+template void caffe_gpu_zerout<unsigned int>(int count, const unsigned int *x, unsigned int *y, unsigned int th);
+template void caffe_gpu_zerout<float>(int count, const float *x, float *y, float th);
+template void caffe_gpu_zerout<double>(int count, const double *x, double *y, double th);
+
+/*template  <typename Dtype>
+__global__ void if_zerout_fiber_kernel(
+  int I, int J, int K, const Dtype *x, Dtype * y, int mode, Dtype thre)
+{
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+
+  if (0 == mode) {
+    int nfiber = J*K;
+    while (tid < nfiber) {
+      int is_zero = 1;
+      for (int i = 0; i < I; ++i) {
+        if (x[i*J*K + tid] > thre || x[i*J*K + tid] < -thre) {
+          is_zero = 0;
+          break;
+        }
+      }
+
+      y[tid] = is_zero;
+
+      tid += gridDim.x*blockDim.x;
+    }
+  }
+  else if (1 == mode) {
+    int nfiber = J*K;
+    while (tid < nfiber) {
+      int is_zero = 1;
+      for (int i = 0; i < I; ++i) {
+        if (x[i*J*K + tid] > thre || x[i*J*K + tid] < -thre) {
+          is_zero = 0;
+          break;
+        }
+      }
+
+      y[tid] = is_zero;
+
+      tid += gridDim.x*blockDim.x;
+    }
+  }
+  else {
+  }
+}*/
 
 template  <typename Dtype>
 __global__ void shrinkage_kernel(void * mutable_gpu_data, int count, Dtype thre){
