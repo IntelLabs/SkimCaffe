@@ -9,8 +9,16 @@ endif
 
 ifeq (yes, $(DBG))
   CXXFLAGS += -O0 -g
+  ifeq (yes, $(KNL))
+    CXXFLAGS += -xMIC-AVX512
+  endif
 else
-  CXXFLAGS += -O3 -DNDEBUG -xHost -DMKL_DIRECT_CALL
+  CXXFLAGS += -O3 -DNDEBUG -DMKL_DIRECT_CALL
+  ifeq (yes, $(KNL))
+    CXXFLAGS += -xMIC-AVX512
+  else
+    CXXFLAGS += -xHost
+  endif
 endif
 
 csrmm_test: csrmm_test.cpp
