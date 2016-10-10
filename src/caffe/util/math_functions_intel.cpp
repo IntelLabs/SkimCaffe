@@ -1158,57 +1158,129 @@ void caffe_cpu_sconv(
       out_channels);
     return;
   }
-  else if (pad_h == 1 && pad_w == 1 && stride_h == 1 && stride_w == 1 && kernel_h == 3 && kernel_w == 3 && height == width) {
-    if (width == 12) {
-      // overfeat
-      sconv_3x3_pad1<12>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
+  else if (stride_h == 1 && stride_w == 1 && height == width && kernel_h == kernel_w && pad_h == pad_w && kernel_h == 2*pad_h + 1) {
+    if (kernel_h == 1) {
+      // the following sizes are used by GoogLeNet
+      if (height == 4) {
+        sconv_unit_stride<4, 1>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 7) {
+        sconv_unit_stride<7, 1>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 14) {
+        sconv_unit_stride<14, 1>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 28) {
+        sconv_unit_stride<28, 1>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 56) {
+        sconv_unit_stride<56, 1>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
     }
-    else if (width == 13) {
-      // alexnet conv3-5
-      sconv_3x3_pad1<13>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
+    else if (kernel_h == 3) {
+      if (height == 12) {
+        // overfeat
+        sconv_unit_stride<12, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 13) {
+        // alexnet conv3-5
+        sconv_unit_stride<13, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      // the following sizes are used by GoogLeNet
+      else if (height == 7) {
+        sconv_unit_stride<7, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 14) {
+        sconv_unit_stride<14, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 28) {
+        sconv_unit_stride<28, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 56) {
+        sconv_unit_stride<56, 3>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
     }
-    // the following sizes are used by GoogLeNet
-    else if (width == 7) {
-      sconv_3x3_pad1<7>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
-    }
-    else if (width == 14) {
-      sconv_3x3_pad1<14>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
-    }
-    else if (width == 28) {
-      sconv_3x3_pad1<28>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
-    }
-    else if (width == 56) {
-      sconv_3x3_pad1<56>(
-          input_padded,
-          rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-          bias,
-          output, out_channels, output_scratch);
-      return;
+    else if (kernel_h == 5) {
+      // the following sizes are used by GoogLeNet
+      if (height == 7) {
+        sconv_unit_stride<7, 5>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 14) {
+        sconv_unit_stride<14, 5>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
+      else if (height == 28) {
+        sconv_unit_stride<28, 5>(
+            input_padded,
+            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+            bias,
+            output, out_channels, output_scratch);
+        return;
+      }
     }
   }
   else if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {

@@ -22,7 +22,6 @@ static const int NTILES = 64; // FIXME - hardcoded for 68c KNL
 #endif
 
 static const int OC_BLOCK = 16;
-static const int COL_BLOCK = 32;
 
 //#define VECTORIZE_OVER_INPUTS
 
@@ -61,8 +60,8 @@ extern int flop_cnt;
 
 
  */
-template<int WIDTH>
-static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
+template<int WIDTH, int K>
+static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
     // input features
     const float *input,
     // weights
@@ -72,7 +71,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
     const float *bias,
     // output features
     float *output,
-    int out_channels,
+    int num_out_channels,
     float *scratch) // scratch: 832B per OC_BLOCK
 {
   unsigned long long t = __rdtsc();
@@ -83,7 +82,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
   int tid = omp_get_thread_num();
 
   const int WOUT = WIDTH;
-  const int PAD = 1;
+  const int PAD = (K - 1)/2;
 
   int nthread_groups = nthreads;
 #ifdef __AVX512F__
@@ -96,9 +95,10 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
   int gid = tid/nthreads_per_group;
   int tid_in_group = tid%nthreads_per_group;
 
-  int c_per_thread = (out_channels/OC_BLOCK + nthreads_per_group - 1)/nthreads_per_group;
-  int c_begin = std::min(c_per_thread*tid_in_group, out_channels/OC_BLOCK);
-  int c_end = std::min(c_begin + c_per_thread, out_channels/OC_BLOCK);
+  int num_oc_blocks = (num_out_channels + OC_BLOCK - 1)/OC_BLOCK;
+  int oc_blocks_per_thread = (num_oc_blocks + nthreads_per_group - 1)/nthreads_per_group;
+  int oc_block_begin = std::min(oc_blocks_per_thread*tid_in_group, num_oc_blocks);
+  int oc_block_end = std::min(oc_block_begin + oc_blocks_per_thread, num_oc_blocks);
   const int ALIGNED_W = (WIDTH + 16 - 1)/16*16;
 
 #ifdef __AVX512F__
@@ -123,7 +123,9 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
   SIMDITYPE mask_v = _MM_LOAD_SI((SIMDITYPE *)mask_temp);
 #endif
 
-  for (int oc_begin = c_begin*OC_BLOCK; oc_begin < c_end*OC_BLOCK; oc_begin += OC_BLOCK) {
+  for (int oc_begin = oc_block_begin*OC_BLOCK; oc_begin < oc_block_end*OC_BLOCK; oc_begin += OC_BLOCK) {
+    int oc_end = std::min(oc_begin + OC_BLOCK, num_out_channels);
+
     SIMDFPTYPE sum[REG_BLOCK_H][REG_BLOCK_W];
     SIMDFPTYPE w_v;
     int off;
@@ -132,11 +134,11 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
     const int *colidx = colidx_blocked[0];
     const float *values = values_blocked[0];
 
-    for (int out_channel = oc_begin; out_channel < oc_begin + OC_BLOCK; ++out_channel) {
-      SIMDFPTYPE bias_v = _MM_SET1(bias[out_channel]);
+    for (int oc = oc_begin; oc < oc_end; ++oc) {
+      SIMDFPTYPE bias_v = _MM_SET1(bias[oc]);
 
-      int jbegin = rowptr[out_channel];
-      int jend = rowptr[out_channel + 1];
+      int jbegin = rowptr[oc];
+      int jend = rowptr[oc + 1];
 
       // register blocking over input image positions
       int hbegin;
@@ -154,7 +156,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
 #define CHANNEL_TO_DEBUG (359)
 #define ROW_TO_DEBUG (32)
 #define COL_TO_DEBUG (28)
-            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG && COL_TO_DEBUG >= w*VLEN && COL_TO_DEBUG < (w + 1)*VLEN) {
+            if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG && COL_TO_DEBUG >= w*VLEN && COL_TO_DEBUG < (w + 1)*VLEN) {
               float temp[VLEN];
               _MM_STORE(temp, bias_v);
               printf("%g", temp[COL_TO_DEBUG - w*VLEN]);
@@ -163,7 +165,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_3x3_pad1(
           }
         }
 
-#define SCONV_3x3_INNER_PROD \
+#define SCONV_INNER_PROD \
         for (int j = jbegin; j < jend; ++j) { \
           w_v = _MM_SET1(values[j]); \
           off = colidx[j]; \
@@ -185,13 +187,13 @@ _Pragma("unroll(REG_BLOCK_W") \
           } \
         }
 
-        SCONV_3x3_INNER_PROD;
+        SCONV_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+            _MM_STORE(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
           }
         }
       } // for each register block
@@ -209,7 +211,7 @@ _Pragma("unroll(REG_BLOCK_W") \
           }
         }
 
-#define SCONV_3x3_INNER_PROD_REMAINDER \
+#define SCONV_INNER_PROD_REMAINDER \
         for (int j = jbegin; j < jend; ++j) { \
           w_v = _MM_SET1(values[j]); \
           off = colidx[j]; \
@@ -223,13 +225,13 @@ _Pragma("unroll(REG_BLOCK_W)") \
           } \
         }
 
-        SCONV_3x3_INNER_PROD_REMAINDER;
+        SCONV_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+            _MM_STORE(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
@@ -240,7 +242,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
       colidx = colidx_blocked[b];
       values = values_blocked[b];
 
-      for (int out_channel = oc_begin; out_channel < oc_begin + OC_BLOCK; ++out_channel) {
+      for (int out_channel = oc_begin; out_channel < oc_end; ++out_channel) {
         int jbegin = rowptr[out_channel];
         int jend = rowptr[out_channel + 1];
 
@@ -257,7 +259,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
             }
           }
 
-          SCONV_3x3_INNER_PROD;
+          SCONV_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
           for (int h = hbegin; h < hend; ++h) {
@@ -280,7 +282,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
             }
           }
 
-          SCONV_3x3_INNER_PROD_REMAINDER;
+          SCONV_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
           for (int h = hbegin; h < hend; ++h) {
@@ -297,7 +299,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
     colidx = colidx_blocked[ncolblocks - 1];
     values = values_blocked[ncolblocks - 1];
 
-    for (int out_channel = oc_begin; out_channel < oc_begin + OC_BLOCK; ++out_channel) {
+    for (int out_channel = oc_begin; out_channel < oc_end; ++out_channel) {
       int jbegin = rowptr[out_channel];
       int jend = rowptr[out_channel + 1];
 
@@ -314,7 +316,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           }
         }
 
-        SCONV_3x3_INNER_PROD;
+        SCONV_INNER_PROD;
 
 #pragma unroll(REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
@@ -353,7 +355,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           }
         }
 
-        SCONV_3x3_INNER_PROD_REMAINDER;
+        SCONV_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {

@@ -111,7 +111,7 @@ int main(int argc, const char *argv[])
   const int WIDTH = 13;
   const int WOUT = WIDTH;
   const int PAD = 1;
-  int colblock = COL_BLOCK;
+  int colblock = 32;
 
   SpMP::CSR *A = new SpMP::CSR(argv[1]);
   if (A->m != NOUT) {
@@ -386,7 +386,7 @@ int main(int argc, const char *argv[])
 //            bias,
 //            output + i*NOUT*WOUT*WOUT, NOUT,
 //            input_scratch, output_colmajor_scratch, col_major_ic_block);
-        sconv_3x3_pad1<13>(
+        sconv_unit_stride<13, 3>(
               input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD),
               //A->rowptr, A->colidx, values,
               rowptr_blocked_temp, colidx_blocked_temp, values_blocked_temp,
