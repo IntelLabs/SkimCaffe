@@ -70,6 +70,7 @@ void SGDSolver<Dtype>::PreSolve() {
   update_.clear();
   temp_.clear();
   temp_winograd_.clear();
+  unthresholded_.clear();
   for (int i = 0; i < net_params.size(); ++i) {
     const vector<int>& shape = net_params[i]->shape();
     history_.push_back(shared_ptr<Blob<Dtype> >(new Blob<Dtype>(shape)));
@@ -81,9 +82,11 @@ void SGDSolver<Dtype>::PreSolve() {
       shape_winograd[2] = shape[2] == 3 ? 6 : 8;
       shape_winograd[3] = shape_winograd[2];
       temp_winograd_.push_back(shared_ptr<Blob<Dtype> >(new Blob<Dtype>(shape_winograd)));
+      unthresholded_.push_back(shared_ptr<Blob<Dtype> >(new Blob<Dtype>(shape)));
     }
     else {
       temp_winograd_.push_back(shared_ptr<Blob<Dtype> >((Blob<Dtype> *)NULL));
+      unthresholded_.push_back(shared_ptr<Blob<Dtype> >((Blob<Dtype> *)NULL));
     }
   }
 }
@@ -324,6 +327,48 @@ const shared_ptr<Blob<float> > get_G_kron_G_4x4_5x5()
   }
 
   return G_kron_G;
+}
+
+float get_l2_norm_of(const Blob<float> *A)
+{
+  float sum = 0;
+  const float *Aptr = A->cpu_data();
+  for (int i = 0; i < A->count(); ++i) {
+    sum += Aptr[i]*Aptr[i];
+  }
+  return sqrtf(sum);
+}
+
+float get_Frob_norm_of_G_kron_G_4x4_3x3()
+{
+  static bool initialized = false;
+  static float ret = 0;
+  if (!initialized) {
+    ret = get_l2_norm_of(get_G_kron_G_4x4_3x3<float>().get());
+    LOG(INFO) << "||G \\kron G|| " << ret;
+    initialized = true;
+  }
+  return ret;
+}
+
+float get_Frob_norm_of_G_kron_G_4x4_5x5()
+{
+  static bool initialized = false;
+  static float ret = 0;
+  if (!initialized) {
+    ret = get_l2_norm_of(get_G_kron_G_4x4_5x5<float>().get());
+    LOG(INFO) << "||G \\kron G|| " << ret;
+    initialized = true;
+  }
+  return ret;
+}
+
+static bool NORMALIZATION_WINOGRAD_FACTORS = true;
+
+template<typename Dtype>
+Dtype get_threshold(int k)
+{
+  return Dtype(ZEROUT_THRESHOLD) * (NORMALIZATION_WINOGRAD_FACTORS ? (k == 3 ? (get_Frob_norm_of_G_kron_G_4x4_3x3()*k*k/6/6) : (get_Frob_norm_of_G_kron_G_4x4_5x5()*k*k/8/8)) : 1);
 }
 
 template <typename Dtype>
@@ -708,7 +753,6 @@ void SGDSolver<Dtype>::ApplyUpdate() {
   //this->net_->Update();
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
     Blob<Dtype> *param = this->net_->learnable_params()[param_id];
-    param->Update();
 
     // copied from blob::Zerout
     const vector<string>& net_params_local_regular_types = this->net_->params_regularization_type();
@@ -718,14 +762,54 @@ void SGDSolver<Dtype>::ApplyUpdate() {
       regularization_type = local_regularization_type;
     }
 
-    if (regularization_type == "L1_Winograd" && param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+    if (regularization_type == "L1_DNS" || regularization_type == "L1_DNS_Winograd") {
+      if (unthresholded_[param_id] == NULL) {
+        unthresholded_[param_id] = shared_ptr<Blob<Dtype> >(new Blob<Dtype>(param->shape()));
+        memcpy(unthresholded_[param_id]->mutable_cpu_data(), param->cpu_data(), param->count()*sizeof(Dtype));
+        LOG(INFO) << "DNS initialized";
+      }
+
+      switch (Caffe::mode()) {
+      case Caffe::CPU:
+      {
+        caffe_axpy<Dtype>(
+          unthresholded_[param_id]->count(),
+          Dtype(-1),
+          static_cast<const Dtype *>(param->cpu_diff()),
+          static_cast<Dtype *>(unthresholded_[param_id]->mutable_cpu_data()));
+        break;
+      }
+      case Caffe::GPU:
+      {
+#ifndef CPU_ONLY
+        caffe_gpu_axpy<Dtype>(
+          unthresholded_[param_id]->count(),
+          Dtype(-1),
+          static_cast<const Dtype *>(param->gpu_diff()),
+          static_cast<Dtype *>(unthresholded_[param_id]->mutable_gpu_data()));
+#else
+        NO_GPU;
+#endif
+        break;
+      }
+      default:
+        LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
+      }
+    }
+    else {
+      param->Update();
+    }
+
+    if ((regularization_type == "L1_Winograd" || regularization_type == "L1_DNS_Winograd" ||
+          regularization_type == "L2_Winograd" || regularization_type == "L2_DNS_Winograd") &&
+        param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
       int N = param->shape()[0];
       int C = param->shape()[1];
       int K = param->shape()[2];
 
       int M = K == 3 ? 6 : 8;
       const Dtype *GGTInv = K == 3 ? get_GGTInv_4x4_3x3<Dtype>() : get_GGTInv_4x4_5x5<Dtype>();
-      Dtype thre = Dtype(ZEROUT_THRESHOLD);//*K*K/M/M;
+      Dtype thre = get_threshold<Dtype>(K);
 
       switch (Caffe::mode()) {
       case Caffe::CPU:
@@ -736,7 +820,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
         caffe_cpu_gemm(
           CblasNoTrans, CblasNoTrans,
           N*C, M*M, K*K,
-          (Dtype)1, param->cpu_data(),
+          (Dtype)1, regularization_type == "L1_Winograd" ? param->cpu_data() : unthresholded_[param_id]->cpu_data(),
           (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->cpu_data(),
           (Dtype)0, temp);
 
@@ -764,7 +848,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
         caffe_gpu_gemm(
           CblasNoTrans, CblasNoTrans,
           N*C, M*M, K*K,
-          (Dtype)1, param->gpu_data(),
+          (Dtype)1, regularization_type == "L1_Winograd" ? param->gpu_data() : unthresholded_[param_id]->gpu_data(),
           (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->gpu_data(),
           (Dtype)0, temp);
 
@@ -822,7 +906,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
     else if (regularization_type == "L1") {
       // hard threshold
       Dtype thre = Dtype(ZEROUT_THRESHOLD);
-      Dtype* data_ptr_tmp = 0;
+      Dtype* data_ptr_tmp = NULL;
       switch (Caffe::mode()) {
       case Caffe::CPU:
         data_ptr_tmp = static_cast<Dtype*>(param->mutable_cpu_data());
@@ -843,6 +927,35 @@ void SGDSolver<Dtype>::ApplyUpdate() {
         LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
       }
       //this->net_->learnable_params()[param_id]->Zerout();
+    }
+    else if (regularization_type == "L1_DNS" || regularization_type == "L2_DNS") {
+      // hard threshold
+      Dtype thre = Dtype(ZEROUT_THRESHOLD);
+      const Dtype* data_ptr_tmp = NULL;
+      Dtype* thresholded = NULL;
+      switch (Caffe::mode()) {
+      case Caffe::CPU:
+        data_ptr_tmp = static_cast<const Dtype*>(unthresholded_[param_id]->cpu_data());
+        thresholded = static_cast<Dtype *>(param->mutable_cpu_data());
+        for(int i=0;i<param->count();i++){
+            if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
+                thresholded[i]=0;
+            }
+            else {
+                thresholded[i] = data_ptr_tmp[i];
+            }
+        }
+        break;
+      case Caffe::GPU:
+#ifndef CPU_ONLY
+        caffe_gpu_zerout(param->count(), unthresholded_[param_id]->gpu_data(), param->mutable_gpu_data(), thre);
+#else
+        NO_GPU;
+#endif
+        break;
+      default:
+        LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
+      }
     }
     else if (regularization_type == "L2") {
     }
@@ -894,7 +1007,9 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
   Dtype regularization_term = Dtype(0);
 
   Blob<Dtype> *param = net_params[param_id];
-  if (regularization_type == "L1_Winograd" && param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+  if ((regularization_type == "L1_Winograd" || regularization_type == "L1_DNS_Winograd") &&
+      param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+
     assert(param->shape()[2] == param->shape()[3]);
     assert(temp_[param_id]->num_axes() == 4);
     assert(temp_[param_id]->shape()[0] == param->shape()[0]);
@@ -930,13 +1045,14 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
         // sign(W*(G \kron G)^T)*(G \kron G)
         //
         caffe_axpy(param->count(),
-            local_decay/**K*K/M/M*/,
+            local_decay/(NORMALIZATION_WINOGRAD_FACTORS ? (K == 3 ? get_Frob_norm_of_G_kron_G_4x4_3x3() : get_Frob_norm_of_G_kron_G_4x4_5x5()) : 1),
             temp_[param_id]->cpu_data(),
             param->mutable_cpu_diff());
 
         break;
       }
       case Caffe::GPU: {
+#ifndef CPU_ONLY
         Dtype *temp = temp_winograd_[param_id]->mutable_gpu_data();
 
         caffe_gpu_gemm(
@@ -958,9 +1074,12 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
         // sign(W*(G \kron G)^T)*(G \kron G)
         //
         caffe_gpu_axpy(param->count(),
-            local_decay/**K*K/M/M*/,
+            local_decay/(NORMALIZATION_WINOGRAD_FACTORS ? (K == 3 ? get_Frob_norm_of_G_kron_G_4x4_3x3() : get_Frob_norm_of_G_kron_G_4x4_5x5()) : 1),
             temp_[param_id]->gpu_data(),
             param->mutable_gpu_diff());
+#else
+        NO_GPU;
+#endif
 
         break;
       }
@@ -970,11 +1089,15 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
 
     regularization_term *= local_decay*K*K/M/M;
   }
+  else if ((regularization_type == "L2_Winograd" || regularization_type == "L2_DNS_Winograd") &&
+      param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+    NOT_IMPLEMENTED;
+  }
   else {
     switch (Caffe::mode()) {
     case Caffe::CPU: {
       if (local_decay) {
-        if (regularization_type == "L2") {
+        if (regularization_type == "L2" || regularization_type == "L2_DNS") {
           // add weight decay
           caffe_axpy(net_params[param_id]->count(),
               local_decay,
@@ -989,7 +1112,7 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
             LOG(FATAL) << "nan at param " << param_id;
           }
           regularization_term *= local_decay/(Dtype)2.0;
-        } else if (regularization_type == "L1" || regularization_type == "ISTA" || regularization_type == "L1_Winograd") {
+        } else if (regularization_type == "L1" || regularization_type == "ISTA" || regularization_type == "L1_DNS" || regularization_type == "L1_Winograd") {
           caffe_cpu_sign(net_params[param_id]->count(),
               net_params[param_id]->cpu_data(),
               temp_[param_id]->mutable_cpu_data());
@@ -1012,7 +1135,7 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
     case Caffe::GPU: {
 #ifndef CPU_ONLY
       if (local_decay) {
-        if (regularization_type == "L2") {
+        if (regularization_type == "L2" || regularization_type == "L2_DNS") {
           // add weight decay
           caffe_gpu_axpy(net_params[param_id]->count(),
               local_decay,
@@ -1040,7 +1163,7 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
             LOG(FATAL) << "nan at param " << param_id;
           }
           regularization_term *= local_decay/(Dtype)2.0;
-        } else if (regularization_type == "L1" || regularization_type == "ISTA" || regularization_type == "L1_Winograd") {
+        } else if (regularization_type == "L1" || regularization_type == "ISTA" || regularization_type == "L1_DNS" || regularization_type == "L1_Winograd") {
           caffe_gpu_sign(net_params[param_id]->count(),
               net_params[param_id]->gpu_data(),
               temp_[param_id]->mutable_gpu_data());
@@ -1138,7 +1261,7 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
     int K = param->shape()[2];
     int M = K == 3 ? 6 : 8;
 
-    Dtype thre = Dtype(ZEROUT_THRESHOLD);//*K*K/M/M;
+    Dtype thre = get_threshold<Dtype>(K);
 
     switch (Caffe::mode()) {
     case Caffe::CPU: {
@@ -1151,7 +1274,6 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
         (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->cpu_data(),
         (Dtype)0, winograd_weights);
 
-
       int count = 0;
       for (int i = 0; i < N*C*M*M; ++i) {
         if (winograd_weights[i] <= thre && winograd_weights[i] >= (-thre)) {
@@ -1162,6 +1284,7 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
       break;
     }
     case Caffe::GPU: {
+#ifndef CPU_ONLY
       Dtype *winograd_weights = temp_winograd_[param_id]->mutable_gpu_data();
 
       caffe_gpu_gemm(
@@ -1171,9 +1294,12 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
         (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->gpu_data(),
         (Dtype)0, winograd_weights);
 
-      caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights);
+      caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights, thre);
       caffe_gpu_asum(N*C*M*M, winograd_weights, &sparsity);
       sparsity = sparsity*100./(N*C*M*M);
+#else
+      NO_GPU;
+#endif
       break;
     }
     default:
@@ -1202,24 +1328,57 @@ void SGDSolver<Dtype>::PrintWinogradFiberSliceSparsity() {
       int K = param->shape()[2];
       int M = K == 3 ? 6 : 8;
 
-      Dtype *winograd_weights = temp_winograd_[param_id]->mutable_cpu_data();
+      Dtype thre = get_threshold<Dtype>(K);
 
-      caffe_cpu_gemm(
-        CblasNoTrans, CblasNoTrans,
-        N*C, M*M, K*K,
-        (Dtype)1, param->cpu_data(),
-        (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->cpu_data(),
-        (Dtype)0, winograd_weights);
+      switch (Caffe::mode()) {
+      case Caffe::CPU: {
+        Dtype *winograd_weights = temp_winograd_[param_id]->mutable_cpu_data();
 
-      Dtype thre = Dtype(ZEROUT_THRESHOLD);//*K*K/M/M;
+        caffe_cpu_gemm(
+          CblasNoTrans, CblasNoTrans,
+          N*C, M*M, K*K,
+          (Dtype)1, param->cpu_data(),
+          (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->cpu_data(),
+          (Dtype)0, winograd_weights);
 
-      sparsity_msg_stream <<
-        100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 0, thre) << "/" << 
-        100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 0, thre) << "\t" <<
-        100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 1, thre) << "/" << 
-        100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 1, thre) << "\t" <<
-        100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 2, thre) << "/" << 
-        100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 2, thre) << "\n";
+        sparsity_msg_stream <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 0, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 0, thre) << "\t" <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 1, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 1, thre) << "\t" <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights, 2, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights, 2, thre) << "\n";
+          break;
+      }
+      case Caffe::GPU: {
+#ifndef CPU_ONLY
+        Dtype *winograd_weights = temp_winograd_[param_id]->mutable_gpu_data();
+
+        caffe_gpu_gemm(
+          CblasNoTrans, CblasNoTrans,
+          N*C, M*M, K*K,
+          (Dtype)1, param->gpu_data(),
+          (K == 3 ? get_G_kron_G_transpose_4x4_3x3<Dtype>() : get_G_kron_G_transpose_4x4_5x5<Dtype>())->gpu_data(),
+          (Dtype)0, winograd_weights);
+
+        Dtype thre = get_threshold<Dtype>(K);
+
+        const Dtype *winograd_weights2 = temp_winograd_[param_id]->cpu_data();
+        sparsity_msg_stream <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights2, 0, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights2, 0, thre) << "\t" <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights2, 1, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights2, 1, thre) << "\t" <<
+          100*caffe_cpu_fiber_sparsity(N, C, M*M, winograd_weights2, 2, thre) << "/" << 
+          100*caffe_cpu_slice_sparsity(N, C, M*M, winograd_weights2, 2, thre) << "\n";
+#else
+          NO_GPU;
+#endif
+          break;
+      }
+      default:
+        LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
+      }
     }
   }
   LOG(INFO) << sparsity_msg_stream.str();
