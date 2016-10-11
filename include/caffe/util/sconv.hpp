@@ -76,6 +76,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
 {
   unsigned long long t = __rdtsc();
 
+  assert(PAD <= (K - 1)/2);
   assert(ncolblocks >= 2);
 
   int nthreads = omp_get_num_threads();
@@ -98,7 +99,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
   int oc_blocks_per_thread = (num_oc_blocks + nthreads_per_group - 1)/nthreads_per_group;
   int oc_block_begin = std::min(oc_blocks_per_thread*tid_in_group, num_oc_blocks);
   int oc_block_end = std::min(oc_block_begin + oc_blocks_per_thread, num_oc_blocks);
-  const int ALIGNED_W = (WIDTH + 16 - 1)/16*16;
+  const int ALIGNED_W = (WOUT + 16 - 1)/16*16;
 
 #ifdef __AVX512F__
   const int REG_BLOCK_SIZE = 30; // use at most 30 SIMD registers out of 32
@@ -152,9 +153,9 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
 
 //#define DBG_SCONV
 #ifdef DBG_SCONV
-#define CHANNEL_TO_DEBUG (359)
-#define ROW_TO_DEBUG (32)
-#define COL_TO_DEBUG (28)
+#define CHANNEL_TO_DEBUG (248)
+#define ROW_TO_DEBUG (12)
+#define COL_TO_DEBUG (12)
             if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG && COL_TO_DEBUG >= w*VLEN && COL_TO_DEBUG < (w + 1)*VLEN) {
               float temp[VLEN];
               _MM_STORE(temp, bias_v);
@@ -176,13 +177,11 @@ _Pragma("unroll(REG_BLOCK_W") \
               sum[h][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + (h + hbegin)*(WIDTH + PAD) + VLEN*w), sum[h][w]); \
             } \
  \
-/*#ifdef DBG_SCONV \
-            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) { \
+            /*if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) { \
               float temp[VLEN]; \
               _MM_STORE(temp, sum[h - hbegin][COL_TO_DEBUG/VLEN]); \
               printf(" + %g*%d:%g:%g", values[j], off, input[off + ROW_TO_DEBUG*(WIDTH + PAD) + COL_TO_DEBUG], temp[COL_TO_DEBUG%VLEN]); \
-            } \
-#endif*/ \
+            }*/ \
           } \
         }
 
@@ -241,9 +240,9 @@ _Pragma("unroll(REG_BLOCK_W)") \
       colidx = colidx_blocked[b];
       values = values_blocked[b];
 
-      for (int out_channel = oc_begin; out_channel < oc_end; ++out_channel) {
-        int jbegin = rowptr[out_channel];
-        int jend = rowptr[out_channel + 1];
+      for (int oc = oc_begin; oc < oc_end; ++oc) {
+        int jbegin = rowptr[oc];
+        int jend = rowptr[oc + 1];
 
         // register blocking over input image positions
         int hbegin;
@@ -254,7 +253,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+              sum[h - hbegin][w] = _MM_LOAD(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
             }
           }
 
@@ -264,7 +263,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+              _MM_STORE(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
             }
           }
         } // for each register block
@@ -277,7 +276,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+              sum[h - hbegin][w] = _MM_LOAD(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
             }
           }
 
@@ -287,7 +286,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
           for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _MM_STORE(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
+              _MM_STORE(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w, sum[h - hbegin][w]);
             }
           }
         } // remainder register block
@@ -298,9 +297,9 @@ _Pragma("unroll(REG_BLOCK_W)") \
     colidx = colidx_blocked[ncolblocks - 1];
     values = values_blocked[ncolblocks - 1];
 
-    for (int out_channel = oc_begin; out_channel < oc_end; ++out_channel) {
-      int jbegin = rowptr[out_channel];
-      int jend = rowptr[out_channel + 1];
+    for (int oc = oc_begin; oc < oc_end; ++oc) {
+      int jbegin = rowptr[oc];
+      int jend = rowptr[oc + 1];
 
       // register blocking over input image positions
       int hbegin;
@@ -311,7 +310,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+            sum[h - hbegin][w] = _MM_LOAD(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
           }
         }
 
@@ -322,12 +321,12 @@ _Pragma("unroll(REG_BLOCK_W)") \
           if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
 
 #ifdef DBG_SCONV
-            if (out_channel == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-              printf(" = %g\n", output[(out_channel*WOUT + h)*WOUT + COL_TO_DEBUG]);
+            if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+              printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
             }
 #endif
           }
@@ -335,9 +334,9 @@ _Pragma("unroll(REG_BLOCK_W)") \
             int w;
 #pragma unroll(REG_BLOCK_W - 1)
             for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
-            _MM_MASK_STORE(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+            _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
@@ -350,7 +349,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
         for (int h = hbegin; h < hend; ++h) {
 #pragma unroll(REG_BLOCK_W)
           for (int w = 0; w < REG_BLOCK_W; ++w) {
-            sum[h - hbegin][w] = _MM_LOAD(scratch + ((out_channel - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
+            sum[h - hbegin][w] = _MM_LOAD(scratch + ((oc - oc_begin)*WOUT + h)*ALIGNED_W + VLEN*w);
           }
         }
 
@@ -361,16 +360,16 @@ _Pragma("unroll(REG_BLOCK_W)") \
           if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
-              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
           }
           else {
             int w;
 #pragma unroll(REG_BLOCK_W - 1)
             for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-              _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+              _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
             }
-            _MM_MASK_STORE(output + (out_channel*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+            _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
           }
         }
       } // remainder register block
