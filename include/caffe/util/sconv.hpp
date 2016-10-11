@@ -60,7 +60,7 @@ extern int flop_cnt;
 
 
  */
-template<int WIDTH, int K>
+template<int WIDTH, int K, int PAD = (K - 1)/2>
 static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
     // input features
     const float *input,
@@ -81,8 +81,7 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
   int nthreads = omp_get_num_threads();
   int tid = omp_get_thread_num();
 
-  const int WOUT = WIDTH;
-  const int PAD = (K - 1)/2;
+  const int WOUT = WIDTH + 2*PAD - K + 1;
 
   int nthread_groups = nthreads;
 #ifdef __AVX512F__
@@ -107,17 +106,17 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
   const int REG_BLOCK_SIZE = 14; // use at most 14 SIMD registers out of 16
 #endif
 
-  const int REG_BLOCK_W = (WIDTH + VLEN - 1)/VLEN;
+  const int REG_BLOCK_W = (WOUT + VLEN - 1)/VLEN;
   assert(REG_BLOCK_W <= REG_BLOCK_SIZE);
-  const int REG_BLOCK_H = WIDTH < REG_BLOCK_SIZE/REG_BLOCK_W ? WIDTH : REG_BLOCK_SIZE/REG_BLOCK_W;
+  const int REG_BLOCK_H = WOUT < REG_BLOCK_SIZE/REG_BLOCK_W ? WOUT : REG_BLOCK_SIZE/REG_BLOCK_W;
   // WIDTH = 13 (AlexNet conv3-5), AVX2 : REG_BLOCK_W = 2, REG_BLOCK_H = 7, ALIGNED_W = 16
   // WIDTH = 56 (GoogLeNet), AVX2 : REG_BLOCK_W = 7, REG_BLOCK_H = 2, ALIGNED_W = 64
 
 #ifdef __AVX512F__
-  __mmask16 mask_v = (1 << (WIDTH%VLEN)) - 1;
+  __mmask16 mask_v = (1 << (WOUT%VLEN)) - 1;
 #else
   __declspec(aligned(64)) int mask_temp[VLEN] = { 0 };
-  for (int i = 0; i < WIDTH%VLEN; ++i) {
+  for (int i = 0; i < WOUT%VLEN; ++i) {
     mask_temp[i] = -1;
   }
   SIMDITYPE mask_v = _MM_LOAD_SI((SIMDITYPE *)mask_temp);
@@ -320,7 +319,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
 
 #pragma unroll(REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
-          if (WIDTH%VLEN == 0) {
+          if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
               _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
@@ -359,7 +358,7 @@ _Pragma("unroll(REG_BLOCK_W)") \
 
 #pragma unroll(WOUT%REG_BLOCK_H)
         for (int h = hbegin; h < hend; ++h) {
-          if (WIDTH%VLEN == 0) {
+          if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
             for (int w = 0; w < REG_BLOCK_W; ++w) {
               _MM_STOREU(output + (out_channel*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);

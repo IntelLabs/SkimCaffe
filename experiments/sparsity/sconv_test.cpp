@@ -109,8 +109,8 @@ int main(int argc, const char *argv[])
   const int NIN = 256;
   const int K = 3;
   const int WIDTH = 13;
-  const int WOUT = WIDTH;
   const int PAD = 1;
+  const int WOUT = WIDTH + 2*PAD - K + 1;
   int colblock = 32;
 
   SpMP::CSR *A = new SpMP::CSR(argv[1]);
@@ -386,7 +386,7 @@ int main(int argc, const char *argv[])
 //            bias,
 //            output + i*NOUT*WOUT*WOUT, NOUT,
 //            input_scratch, output_colmajor_scratch, col_major_ic_block);
-        sconv_unit_stride<13, 3>(
+        sconv_unit_stride<13, 3, PAD>(
               input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD),
               //A->rowptr, A->colidx, values,
               rowptr_blocked_temp, colidx_blocked_temp, values_blocked_temp,
@@ -470,7 +470,7 @@ int main(int argc, const char *argv[])
     sum_cycles += times[i*16];
   }
 
-  double flops = (double)NOUT*NIN*WIDTH*WIDTH*K*K*2;
+  double flops = (double)NOUT*NIN*WOUT*WOUT*K*K*2;
   //printf("flops = %lld\n", flop_cnt);
   printf("mflops-per-file %g\n", flops/1e6);
   printf("effective-GF/s %g %g\n", flops*REPEAT*NBATCH/t/1e9, flops*REPEAT*NBATCH/(max_cycles/cpu_freq)/1e6);

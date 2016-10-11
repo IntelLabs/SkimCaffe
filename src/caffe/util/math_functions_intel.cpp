@@ -1158,129 +1158,134 @@ void caffe_cpu_sconv(
       out_channels);
     return;
   }
-  else if (stride_h == 1 && stride_w == 1 && height == width && kernel_h == kernel_w && pad_h == pad_w && kernel_h == 2*pad_h + 1) {
-    if (kernel_h == 1) {
-      // the following sizes are used by GoogLeNet
-      if (height == 4) {
-        sconv_unit_stride<4, 1>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
+  else if (stride_h == 1 && stride_w == 1 && height == width && kernel_h == kernel_w && pad_h == pad_w) {
+    if (kernel_h == 2*pad_h + 1) { // matched padding
+      if (kernel_h == 1) {
+        // the following sizes are used by GoogLeNet
+        if (height == 4) {
+          sconv_unit_stride<4, 1>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 7) {
+          sconv_unit_stride<7, 1>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 14) {
+          sconv_unit_stride<14, 1>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 28) {
+          sconv_unit_stride<28, 1>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 56) {
+          sconv_unit_stride<56, 1>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
       }
-      else if (height == 7) {
-        sconv_unit_stride<7, 1>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
+      else if (kernel_h == 3) {
+        if (height == 12) {
+          // overfeat
+          sconv_unit_stride<12, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 13) {
+          // alexnet conv3-5
+          sconv_unit_stride<13, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        // the following sizes are used by GoogLeNet
+        else if (height == 7) {
+          sconv_unit_stride<7, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 14) {
+          sconv_unit_stride<14, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 28) {
+          sconv_unit_stride<28, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 56) {
+          sconv_unit_stride<56, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
       }
-      else if (height == 14) {
-        sconv_unit_stride<14, 1>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 28) {
-        sconv_unit_stride<28, 1>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 56) {
-        sconv_unit_stride<56, 1>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
+      else if (kernel_h == 5) {
+        // the following sizes are used by GoogLeNet
+        if (height == 7) {
+          sconv_unit_stride<7, 5>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 14) {
+          sconv_unit_stride<14, 5>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 28) {
+          sconv_unit_stride<28, 5>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
       }
     }
-    else if (kernel_h == 3) {
-      if (height == 12) {
-        // overfeat
-        sconv_unit_stride<12, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 13) {
-        // alexnet conv3-5
-        sconv_unit_stride<13, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      // the following sizes are used by GoogLeNet
-      else if (height == 7) {
-        sconv_unit_stride<7, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 14) {
-        sconv_unit_stride<14, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 28) {
-        sconv_unit_stride<28, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 56) {
-        sconv_unit_stride<56, 3>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-    }
-    else if (kernel_h == 5) {
-      // the following sizes are used by GoogLeNet
-      if (height == 7) {
-        sconv_unit_stride<7, 5>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 14) {
-        sconv_unit_stride<14, 5>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
-      else if (height == 28) {
-        sconv_unit_stride<28, 5>(
-            input_padded,
-            rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-            bias,
-            output, out_channels, output_scratch);
-        return;
-      }
+    else if (0 == pad_h) { // zero padding
+
     }
   }
   else if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {
