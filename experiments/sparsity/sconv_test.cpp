@@ -386,7 +386,7 @@ int main(int argc, const char *argv[])
 //            bias,
 //            output + i*NOUT*WOUT*WOUT, NOUT,
 //            input_scratch, output_colmajor_scratch, col_major_ic_block);
-        sconv_unit_stride<13, 3, PAD>(
+        sconv_unit_stride<WIDTH, K, PAD>(
               input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD),
               //A->rowptr, A->colidx, values,
               rowptr_blocked_temp, colidx_blocked_temp, values_blocked_temp,
