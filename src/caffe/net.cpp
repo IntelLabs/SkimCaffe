@@ -1018,7 +1018,7 @@ template <typename Dtype>
 void Net<Dtype>::Update() {
   for (int i = 0; i < learnable_params_.size(); ++i) {
     learnable_params_[i]->Update();
-    learnable_params_[i]->Zerout();
+    learnable_params_[i]->Zerout(Solver<Dtype>::getPruneThreshold());
   }
 }
 

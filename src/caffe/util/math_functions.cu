@@ -189,6 +189,18 @@ __global__ void zerout_kernel(int count, const Dtype *x, Dtype *y, Dtype thre){
 	}
 }
 
+template  <typename Dtype>
+__global__ void zerout_kernel2(int count, Dtype *x, const Dtype *thresholds, int thresholds_len, Dtype weight){
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+	while(tid<count){
+    Dtype thre = thresholds[tid%thresholds_len]*weight;
+		if(x[tid]<=thre && x[tid]>=(-thre)){
+			x[tid] = 0;
+		}
+		tid += gridDim.x*blockDim.x;
+	}
+}
+
 template <typename Dtype>
 void caffe_gpu_zerout(void * mutable_gpu_data, const int count, Dtype th){
 	zerout_kernel<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, (Dtype *)mutable_gpu_data, (Dtype *)mutable_gpu_data, th);
@@ -197,6 +209,11 @@ void caffe_gpu_zerout(void * mutable_gpu_data, const int count, Dtype th){
 template <typename Dtype>
 void caffe_gpu_zerout(int count, const Dtype *x, Dtype *y, Dtype thre){
 	zerout_kernel<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, x, y, thre);
+}
+
+template <typename Dtype>
+void caffe_gpu_zerout(int count, Dtype *x, const Dtype *thresholds, int thresholds_len, Dtype weight){
+	zerout_kernel2<<<CAFFE_GET_BLOCKS(count), CAFFE_CUDA_NUM_THREADS>>>(count, x, thresholds, thresholds_len, weight);
 }
 
 template void caffe_gpu_zerout<int>(void * mutable_gpu_data, const int count, int th);
@@ -208,6 +225,9 @@ template void caffe_gpu_zerout<int>(int count, const int *x, int *y, int th);
 template void caffe_gpu_zerout<unsigned int>(int count, const unsigned int *x, unsigned int *y, unsigned int th);
 template void caffe_gpu_zerout<float>(int count, const float *x, float *y, float th);
 template void caffe_gpu_zerout<double>(int count, const double *x, double *y, double th);
+
+template void caffe_gpu_zerout<float>(int count, float *x, const float *thresholds, int thresholds_len, float weight);
+template void caffe_gpu_zerout<double>(int count, double *x, const double *thresholds, int thresholds_len, double weight);
 
 /*template  <typename Dtype>
 __global__ void if_zerout_fiber_kernel(
@@ -295,9 +315,24 @@ __global__ void if_zerout_kernel(const int n, const Dtype * x, Dtype *y, Dtype t
 	}
 }
 
+template  <typename Dtype>
+__global__ void if_zerout_kernel(const int n, const Dtype * x, Dtype *y, const Dtype *thresholds, int thresholds_len, Dtype weight){
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+	while(tid<n){
+    Dtype thre = thresholds[tid%thresholds_len]*weight;
+		y[tid] = (x[tid]<=thre && x[tid]>=(-thre)) ? 1 : 0;
+		tid += gridDim.x*blockDim.x;
+	}
+}
+
 template <typename Dtype>
 void caffe_gpu_if_zerout(const int n, const Dtype * x, Dtype *y, Dtype th){
 	if_zerout_kernel<<<CAFFE_GET_BLOCKS(n), CAFFE_CUDA_NUM_THREADS>>>(n, x, y, th);
+}
+
+template <typename Dtype>
+void caffe_gpu_if_zerout(const int n, const Dtype * x, Dtype *y, const Dtype *thresholds, int thresholds_len, Dtype weight) {
+	if_zerout_kernel<<<CAFFE_GET_BLOCKS(n), CAFFE_CUDA_NUM_THREADS>>>(n, x, y, thresholds, thresholds_len, weight);
 }
 
 template void caffe_gpu_if_zerout<int>(const int n, const int * x, int *y, int th);
@@ -306,6 +341,28 @@ template void caffe_gpu_if_zerout<unsigned int>(const int n, const unsigned int*
 template void caffe_gpu_if_zerout<float>(const int n, const float * x, float *y, float th);
 template void caffe_gpu_if_zerout<double>(const int n, const double* x, double *y, double th);
 
+template void caffe_gpu_if_zerout<float>(const int n, const float * x, float *y, const float *thresholds, int thresholds_len, float weight);
+template void caffe_gpu_if_zerout<double>(const int n, const double* x, double *y, const double *thresholds, int thresholds_len, double weight);
+
+template  <typename Dtype>
+__global__ void if_nonzerout_kernel(const int n, const Dtype * x, Dtype *y, Dtype thre){
+	int tid = threadIdx.x + blockDim.x*blockIdx.x;
+	while(tid<n){
+		y[tid] = (x[tid]<=thre && x[tid]>=(-thre)) ? 0 : 1;
+		tid += gridDim.x*blockDim.x;
+	}
+}
+
+template <typename Dtype>
+void caffe_gpu_if_nonzerout(const int n, const Dtype * x, Dtype *y, Dtype th){
+	if_nonzerout_kernel<<<CAFFE_GET_BLOCKS(n), CAFFE_CUDA_NUM_THREADS>>>(n, x, y, th);
+}
+
+template void caffe_gpu_if_nonzerout<int>(const int n, const int * x, int *y, int th);
+template void caffe_gpu_if_nonzerout<unsigned int>(const int n, const unsigned int* x, unsigned int *y, unsigned int th);
+
+template void caffe_gpu_if_nonzerout<float>(const int n, const float * x, float *y, float th);
+template void caffe_gpu_if_nonzerout<double>(const int n, const double* x, double *y, double th);
 
 //template <>
 //void caffe_gpu_zerout<int>(void * mutable_gpu_data, int count, int th){
@@ -925,8 +982,6 @@ void caffe_gpu_powx<double>(const int N, const double* a,
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(sign, y[index] = (Dtype(0) < x[index])
                                       - (x[index] < Dtype(0)));
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(sgnbit, y[index] = signbit(x[index]));
-DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_zerout, y[index] = ((x[index] <= Dtype(ZEROUT_THRESHOLD) && x[index] >= Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) );
-DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(if_nonzerout, y[index] = ((x[index] > Dtype(ZEROUT_THRESHOLD) || x[index] < Dtype(-ZEROUT_THRESHOLD) ) ? 1 : 0) )
 DEFINE_AND_INSTANTIATE_GPU_UNARY_FUNC(eltwise_multi, y[index] = y[index]*x[index] )
 void caffe_gpu_rng_uniform(const int n, unsigned int* r) {
   CURAND_CHECK(curandGenerate(Caffe::curand_generator(), r, n));

@@ -213,9 +213,8 @@ void Blob<Dtype>::Update() {
 
 
 template <typename Dtype>
-void Blob<Dtype>::Zerout() {
+void Blob<Dtype>::Zerout(Dtype thre) {
   // Zero out elements whose values are smaller than thre.
-  Dtype thre = Dtype(ZEROUT_THRESHOLD);
   Dtype* data_ptr_tmp = 0;
   switch (data_->head()) {
   case SyncedMemory::HEAD_AT_CPU:
@@ -251,21 +250,23 @@ void Blob<Dtype>::Zerout() {
 }
 
 template <typename Dtype>
-void Blob<Dtype>::Disconnect(DisconnectMode mode,int group) {
-	this->Zerout();
+void Blob<Dtype>::Disconnect(DisconnectMode mode,Dtype thre, int group) {
+	this->Zerout(thre);
 	if(mode == ELTWISE){
 		switch (Caffe::mode()) {
 			case Caffe::CPU: {
 				  caffe_cpu_if_nonzerout(count_,
 						  static_cast<const Dtype*>(data_->cpu_data()),
-						  static_cast<Dtype*>(connectivity_->mutable_cpu_data()));
+						  static_cast<Dtype*>(connectivity_->mutable_cpu_data()),
+              thre);
 				  break;
 			}
 			case Caffe::GPU: {
 #ifndef CPU_ONLY
 				  caffe_gpu_if_nonzerout(count_,
 						  static_cast<const Dtype*>(data_->gpu_data()),
-						  static_cast<Dtype*>(connectivity_->mutable_gpu_data()));
+						  static_cast<Dtype*>(connectivity_->mutable_gpu_data()),
+              thre);
 #else
 			  NO_GPU;
 #endif
@@ -287,10 +288,10 @@ void Blob<Dtype>::Disconnect(DisconnectMode mode,int group) {
 }
 
 template <typename Dtype>
-Dtype Blob<Dtype>::GetSparsity(){
+Dtype Blob<Dtype>::GetSparsity(Dtype thre){
 	int zero_num = 0;
 	for(int i=0;i<this->count();i++){
-		if( this->cpu_data()[i]<=ZEROUT_THRESHOLD && this->cpu_data()[i]>=-ZEROUT_THRESHOLD){
+		if( this->cpu_data()[i]<=thre && this->cpu_data()[i]>=-thre){
 			zero_num++;
 		}
 	}

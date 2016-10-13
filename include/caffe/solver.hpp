@@ -94,6 +94,9 @@ class Solver {
    */
   virtual inline const char* type() const { return ""; }
 
+  static Dtype getPruneThreshold() { return prune_threshold_; }
+  static Dtype getMeasureThreshold() { return measure_threshold_; }
+
  protected:
   // Make and apply the update value for the current iteration.
   virtual void ApplyUpdate() = 0;
@@ -128,6 +131,8 @@ class Solver {
 
   // True iff a request to stop early was received.
   bool requested_early_exit_;
+
+  static Dtype prune_threshold_, measure_threshold_;
 
   DISABLE_COPY_AND_ASSIGN(Solver);
 };

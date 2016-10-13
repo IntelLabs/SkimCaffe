@@ -236,10 +236,10 @@ class Blob {
   Dtype* mutable_cpu_connectivity();
   Dtype* mutable_gpu_connectivity();
   void Update();
-  void Zerout();
-  void Disconnect(DisconnectMode mode, int group=1);
+  void Zerout(Dtype threshold);
+  void Disconnect(DisconnectMode mode, Dtype thre, int group=1);
   inline void Connect(){ InitializeConnectivity(); }
-  Dtype GetSparsity();
+  Dtype GetSparsity(Dtype threshold);
   void FromProto(const BlobProto& proto, bool reshape = true);
   void ToProto(BlobProto* proto, bool write_diff = false) const;
   void Snapshot(string filename = "", bool write_diff = false) const;

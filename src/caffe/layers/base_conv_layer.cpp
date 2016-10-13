@@ -2,6 +2,7 @@
 #include <vector>
 
 #include "caffe/filler.hpp"
+#include "caffe/solver.hpp"
 #include "caffe/layers/base_conv_layer.hpp"
 #include "caffe/util/im2col.hpp"
 #include "caffe/util/math_functions.hpp"
@@ -13,7 +14,7 @@ void BaseConvolutionLayer<Dtype>::WeightAlign(){
 	CHECK_EQ(this->blobs_[0]->num_axes(),4);//caffe now supports any dimension
 	//is_sparse_format_weights_ = false;
 	const LayerParameter& layerparam = this->layer_param();
-	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity();
+	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<Dtype>::getMeasureThreshold());
 	//this->blobs_[0]->WriteToNistMMIO(layerparam.name()+".weight");
 
 	ConvolutionParameter conv_param = this->layer_param_.convolution_param();
@@ -126,10 +127,10 @@ void BaseConvolutionLayer<Dtype>::WeightAlign(){
 	//disconnect connections
 	if( layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_ELTWISE ){
 		LOG(INFO)<<"all zero weights of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<Dtype>::ELTWISE);
+		this->blobs_[0]->Disconnect(Blob<Dtype>::ELTWISE, Solver<Dtype>::getPruneThreshold());
 	}else if(layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_GRPWISE){
 		LOG(INFO)<<"weights lying in all-zero groups of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<Dtype>::GRPWISE, group_);
+		this->blobs_[0]->Disconnect(Blob<Dtype>::GRPWISE, Solver<Dtype>::getPruneThreshold(), group_);
 	}
 
 }
