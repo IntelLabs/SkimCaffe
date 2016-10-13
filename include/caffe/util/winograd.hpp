@@ -88,14 +88,20 @@ void transpose_to_float(float *AT, const Dtype *A, int m, int n)
 }
 
 template<typename Dtype>
-void print_matrix(const Dtype *A, int m, int n)
+void print_matrix(const Dtype *A, int m, int n, int lda)
 {
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
-      printf("%g ", A[i*n + j]);
+      printf("%g ", A[i*lda + j]);
     }
     printf("\n");
   }
+}
+
+template<typename Dtype>
+void print_matrix(const Dtype *A, int m, int n)
+{
+  return print_matrix(A, m, n, n);
 }
 
 template <typename Dtype>
@@ -169,6 +175,36 @@ const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_3x3()
 }
 
 template <typename Dtype>
+const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_3x3_row_wise_l2norm()
+{
+  const int M = 6;
+  const int N = 3;
+
+  static bool initialized = false;
+  static boost::shared_ptr<caffe::Blob<Dtype> > row_wise_l2norm;
+
+  if (!initialized) {
+    std::vector<int> shape;
+    shape.push_back(M*M);
+    row_wise_l2norm = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+    Dtype *row_wise_l2norm_data = row_wise_l2norm->mutable_cpu_data();
+
+    const double *G_kron_G = get_G_kron_G_4x4_3x3<double>()->cpu_data();
+    for (int i = 0; i < M*M; ++i) {
+      double sum = 0;
+      for (int j = 0; j < N*N; ++j) {
+        sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
+      }
+      row_wise_l2norm_data[i] = sqrt(sum);
+    }
+
+    initialized = true;
+  }
+
+  return row_wise_l2norm;
+}
+
+template <typename Dtype>
 const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_5x5()
 {
   const int M = 8;
@@ -191,6 +227,36 @@ const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_5x5()
 }
 
 template <typename Dtype>
+const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_5x5_row_wise_l2norm()
+{
+  const int M = 8;
+  const int N = 5;
+
+  static bool initialized = false;
+  static boost::shared_ptr<caffe::Blob<Dtype> > row_wise_l2norm;
+
+  if (!initialized) {
+    std::vector<int> shape;
+    shape.push_back(M*M);
+    row_wise_l2norm = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+    Dtype *row_wise_l2norm_data = row_wise_l2norm->mutable_cpu_data();
+
+    const double *G_kron_G = get_G_kron_G_4x4_5x5<double>()->cpu_data();
+    for (int i = 0; i < M*M; ++i) {
+      double sum = 0;
+      for (int j = 0; j < N*N; ++j) {
+        sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
+      }
+      row_wise_l2norm_data[i] = sqrt(sum);
+    }
+
+    initialized = true;
+  }
+
+  return row_wise_l2norm;
+}
+
+template <typename Dtype>
 double get_l2_norm_of(const caffe::Blob<Dtype> *A)
 {
   double sum = 0;
@@ -206,7 +272,7 @@ double get_Frob_norm_of_G_kron_G_4x4_3x3()
   static bool initialized = false;
   static double ret = 0;
   if (!initialized) {
-    ret = get_l2_norm_of(get_G_kron_G_4x4_3x3<float>().get());
+    ret = get_l2_norm_of(get_G_kron_G_4x4_3x3<double>().get());
     LOG(INFO) << "||G \\kron G|| " << ret;
     initialized = true;
   }
@@ -218,7 +284,7 @@ double get_Frob_norm_of_G_kron_G_4x4_5x5()
   static bool initialized = false;
   static double ret = 0;
   if (!initialized) {
-    ret = get_l2_norm_of(get_G_kron_G_4x4_5x5<float>().get());
+    ret = get_l2_norm_of(get_G_kron_G_4x4_5x5<double>().get());
     LOG(INFO) << "||G \\kron G|| " << ret;
     initialized = true;
   }
@@ -226,12 +292,6 @@ double get_Frob_norm_of_G_kron_G_4x4_5x5()
 }
 
 static bool NORMALIZE_WINOGRAD_FACTORS = true;
-
-template<typename Dtype>
-Dtype get_threshold(int k)
-{
-  return double(ZEROUT_THRESHOLD) * (NORMALIZE_WINOGRAD_FACTORS ? (k == 3 ? (get_Frob_norm_of_G_kron_G_4x4_3x3()*k*k/6/6) : (get_Frob_norm_of_G_kron_G_4x4_5x5()*k*k/8/8)) : 1);
-}
 
 template <typename Dtype>
 const boost::shared_ptr<caffe::Blob<Dtype> > get_transpose_of(
@@ -316,6 +376,54 @@ const double *get_GGTInv_4x4_3x3()
   static double GGTInv[(N*N)*(M*M)];
 
   if (!initialized) {
+#define COMPUTE_PINV_WITH_SVD
+#ifdef COMPUTE_PINV_WITH_SVD
+    double S[N*N];
+    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
+    double superb[N*N - 1];
+
+    double A_temp[(M*M)*(N*N)];
+    memcpy(A_temp, get_G_kron_G_4x4_3x3<double>()->cpu_data(), sizeof(A_temp));
+    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+    MKL_INT info = LAPACKE_dgesvd(
+      LAPACK_ROW_MAJOR, 'S', 'A',
+      M*M, N*N,
+      A_temp, N*N,
+      S,
+      U, N*N,
+      VT, N*N,
+      superb);
+    if (info > 0) {
+      LOG(FATAL) << "SVD failed to converge with return value " << info;
+    }
+
+    double S_pinv[(N*N)*(N*N)];
+    memset(S_pinv, 0, sizeof(S_pinv));
+    for (int i = 0; i < N*N; ++i) {
+      S_pinv[i*N*N + i] = 1/S[i];
+    }
+
+    double V_times_S_pinv[(N*N)*(N*N)];
+
+    double alpha = 1, beta = 0;
+    int m = N*N, n = N*N, k = N*N;
+    int lda = k, ldb = n, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasTrans, CblasNoTrans,
+      m, n, k,
+      alpha, VT, lda,
+      S_pinv, ldb,
+      beta, V_times_S_pinv, ldc);
+
+    m = N*N, n = M*M, k = N*N;
+    lda = k, ldb = k, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasNoTrans, CblasTrans,
+      m, n, k,
+      alpha, V_times_S_pinv, lda,
+      U, ldb,
+      beta, GGTInv, ldc);
+#else
     // A = (G \kron G^T)
     const double *A = get_G_kron_G_4x4_3x3<double>()->cpu_data();
 
@@ -345,8 +453,9 @@ const double *get_GGTInv_4x4_3x3()
       LOG(FATAL) << "potrs returned " << info;
     }
     transpose(GGTInv, A_temp, M*M, N*N);
+#endif
 
-    printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
+    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
 
     initialized = true;
   }
@@ -364,6 +473,58 @@ const float *get_GGTInv_4x4_3x3()
   static float GGTInv[(N*N)*(M*M)];
 
   if (!initialized) {
+#ifdef COMPUTE_PINV_WITH_SVD
+    double S[N*N];
+    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
+    double superb[N*N - 1];
+
+    double A_temp[(M*M)*(N*N)];
+    memcpy(A_temp, get_G_kron_G_4x4_3x3<double>()->cpu_data(), sizeof(A_temp));
+    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+    MKL_INT info = LAPACKE_dgesvd(
+      LAPACK_ROW_MAJOR, 'S', 'A',
+      M*M, N*N,
+      A_temp, N*N,
+      S,
+      U, N*N,
+      VT, N*N,
+      superb);
+    if (info > 0) {
+      LOG(FATAL) << "SVD failed to converge with return value " << info;
+    }
+
+    double S_pinv[(N*N)*(N*N)];
+    memset(S_pinv, 0, sizeof(S_pinv));
+    for (int i = 0; i < N*N; ++i) {
+      S_pinv[i*N*N + i] = 1/S[i];
+    }
+
+    double V_times_S_pinv[(N*N)*(N*N)];
+
+    double alpha = 1, beta = 0;
+    int m = N*N, n = N*N, k = N*N;
+    int lda = k, ldb = n, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasTrans, CblasNoTrans,
+      m, n, k,
+      alpha, VT, lda,
+      S_pinv, ldb,
+      beta, V_times_S_pinv, ldc);
+
+    double GGTInv_double[(N*N)*(M*M)];
+    m = N*N, n = M*M, k = N*N;
+    lda = k, ldb = k, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasNoTrans, CblasTrans,
+      m, n, k,
+      alpha, V_times_S_pinv, lda,
+      U, ldb,
+      beta, GGTInv_double, ldc);
+
+    for (int i = 0; i < (N*N)*(M*M); ++i) {
+      GGTInv[i] = GGTInv_double[i];
+    }
+#else
     // A = (G \kron G^T)
     const double *A = get_G_kron_G_4x4_3x3<double>()->cpu_data();
 
@@ -393,8 +554,9 @@ const float *get_GGTInv_4x4_3x3()
       LOG(FATAL) << "potrs returned " << info;
     }
     transpose_to_float(GGTInv, A_temp, M*M, N*N);
+#endif
 
-    printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
+    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
 
     initialized = true;
   }
@@ -415,6 +577,53 @@ const double *get_GGTInv_4x4_5x5()
   static double GGTInv[(N*N)*(M*M)];
 
   if (!initialized) {
+#ifdef COMPUTE_PINV_WITH_SVD
+    double S[N*N];
+    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
+    double superb[N*N - 1];
+
+    double A_temp[(M*M)*(N*N)];
+    memcpy(A_temp, get_G_kron_G_4x4_5x5<double>()->cpu_data(), sizeof(A_temp));
+    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+    MKL_INT info = LAPACKE_dgesvd(
+      LAPACK_ROW_MAJOR, 'S', 'A',
+      M*M, N*N,
+      A_temp, N*N,
+      S,
+      U, N*N,
+      VT, N*N,
+      superb);
+    if (info > 0) {
+      LOG(FATAL) << "SVD failed to converge with return value " << info;
+    }
+
+    double S_pinv[(N*N)*(N*N)];
+    memset(S_pinv, 0, sizeof(S_pinv));
+    for (int i = 0; i < N*N; ++i) {
+      S_pinv[i*N*N + i] = 1/S[i];
+    }
+
+    double V_times_S_pinv[(N*N)*(N*N)];
+
+    double alpha = 1, beta = 0;
+    int m = N*N, n = N*N, k = N*N;
+    int lda = k, ldb = n, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasTrans, CblasNoTrans,
+      m, n, k,
+      alpha, VT, lda,
+      S_pinv, ldb,
+      beta, V_times_S_pinv, ldc);
+
+    m = N*N, n = M*M, k = N*N;
+    lda = k, ldb = k, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasNoTrans, CblasTrans,
+      m, n, k,
+      alpha, V_times_S_pinv, lda,
+      U, ldb,
+      beta, GGTInv, ldc);
+#else
     // A = (G \kron G^T)
     const double *A = get_G_kron_G_4x4_5x5<double>()->cpu_data();
 
@@ -444,8 +653,9 @@ const double *get_GGTInv_4x4_5x5()
       LOG(FATAL) << "potrs returned " << info;
     }
     transpose(GGTInv, A_temp, M*M, N*N);
+#endif
 
-    printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
+    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
 
     initialized = true;
   }
@@ -463,6 +673,58 @@ const float *get_GGTInv_4x4_5x5()
   static float GGTInv[(N*N)*(M*M)];
 
   if (!initialized) {
+#ifdef COMPUTE_PINV_WITH_SVD
+    double S[N*N];
+    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
+    double superb[N*N - 1];
+
+    double A_temp[(M*M)*(N*N)];
+    memcpy(A_temp, get_G_kron_G_4x4_5x5<double>()->cpu_data(), sizeof(A_temp));
+    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+    MKL_INT info = LAPACKE_dgesvd(
+      LAPACK_ROW_MAJOR, 'S', 'A',
+      M*M, N*N,
+      A_temp, N*N,
+      S,
+      U, N*N,
+      VT, N*N,
+      superb);
+    if (info > 0) {
+      LOG(FATAL) << "SVD failed to converge with return value " << info;
+    }
+
+    double S_pinv[(N*N)*(N*N)];
+    memset(S_pinv, 0, sizeof(S_pinv));
+    for (int i = 0; i < N*N; ++i) {
+      S_pinv[i*N*N + i] = 1/S[i];
+    }
+
+    double V_times_S_pinv[(N*N)*(N*N)];
+
+    double alpha = 1, beta = 0;
+    int m = N*N, n = N*N, k = N*N;
+    int lda = k, ldb = n, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasTrans, CblasNoTrans,
+      m, n, k,
+      alpha, VT, lda,
+      S_pinv, ldb,
+      beta, V_times_S_pinv, ldc);
+
+    double GGTInv_double[(N*N)*(M*M)];
+    m = N*N, n = M*M, k = N*N;
+    lda = k, ldb = k, ldc = n;
+    cblas_dgemm(
+      CblasRowMajor, CblasNoTrans, CblasTrans,
+      m, n, k,
+      alpha, V_times_S_pinv, lda,
+      U, ldb,
+      beta, GGTInv_double, ldc);
+
+    for (int i = 0; i < (N*N)*(M*M); ++i) {
+      GGTInv[i] = GGTInv_double[i];
+    }
+#else
     // A = (G \kron G^T)
     const double *A = get_G_kron_G_4x4_5x5<double>()->cpu_data();
 
@@ -492,8 +754,9 @@ const float *get_GGTInv_4x4_5x5()
       LOG(FATAL) << "potrs returned " << info;
     }
     transpose_to_float(GGTInv, A_temp, M*M, N*N);
+#endif
 
-    printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
+    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
 
     initialized = true;
   }
