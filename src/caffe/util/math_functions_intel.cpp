@@ -1255,6 +1255,14 @@ void caffe_cpu_sconv(
               output, out_channels, output_scratch);
           return;
         }
+        // OCR public
+        else if (height == 3) {
+          sconv_unit_stride<3, 3>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+        }
       }
       else if (kernel_h == 5) {
         // the following sizes are used by GoogLeNet
@@ -1268,6 +1276,14 @@ void caffe_cpu_sconv(
         }
         else if (height == 14) {
           sconv_unit_stride<14, 5>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, out_channels, output_scratch);
+          return;
+        }
+        else if (height == 27) {
+          sconv_unit_stride<27, 5>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
