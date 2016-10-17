@@ -3,7 +3,16 @@
 #include "caffe/layers/conv_layer.hpp"
 #include <omp.h>
 
+extern unsigned long long conv_cycles_of_this_batch[1024*16];
+extern std::map<std::string, unsigned long long> total_conv_cycles;
+extern std::map<std::string, double> total_conv_flops;
+extern int total_files;
+
+double get_cpu_freq();
+
 namespace caffe {
+
+extern double padding_time;
 
 template <typename Dtype>
 void ConvolutionLayer<Dtype>::compute_output_shape() {
@@ -42,6 +51,7 @@ void ConvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   if (this->bias_term_) {
     bias = this->blobs_[1]->cpu_data();
   }
+  double t = omp_get_wtime();
 
   // JSP: by some reason, if nested omp parallelism is used for MKL, I get a wrong results.
   // Disable nested omp parallelization for now. We don't need nested parallelism as long as
@@ -94,6 +104,36 @@ void ConvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 
   mkl_set_num_threads(mkl_max_threads_saved);
+
+  const int output_h = (height + 2 * pad_h -
+      (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
+  const int output_w = (width + 2 * pad_w -
+      (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
+
+  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time;
+
+  double flops = (double)this->num_*this->conv_out_channels_*this->conv_in_channels_/this->group_*output_h*output_w*kernel_h*kernel_w*2;
+
+  unsigned long long max_conv_cycle = 0, sum_conv_cycle = 0;
+  for (int i = 0; i < omp_get_max_threads(); ++i) {
+    max_conv_cycle = std::max(max_conv_cycle, conv_cycles_of_this_batch[i*16]);
+    sum_conv_cycle += conv_cycles_of_this_batch[i*16];
+  }
+  std::string name(this->layer_param_.name());
+  LOG(INFO) <<
+      name <<
+      " K-cycles-per-file max " << max_conv_cycle/1000./this->num_ <<
+      " avg " << sum_conv_cycle/1000./omp_get_max_threads()/this->num_ <<
+      " mFlops-per-file " << flops/this->num_/1e6 <<
+      " GF/s " << flops/(max_conv_cycle/get_cpu_freq())/1e9;
+
+  if (total_conv_cycles.find(name) == total_conv_cycles.end()) {
+    total_conv_cycles[name] = 0;
+    total_conv_flops[name] = 0;
+  }
+  total_conv_cycles[name] += max_conv_cycle;
+  total_conv_flops[name] += flops;
+  total_files += this->num_;
 }
 
 template <typename Dtype>
