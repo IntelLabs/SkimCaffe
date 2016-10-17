@@ -60,6 +60,8 @@ More details on direct sparse convolution is described at: https://arxiv.org/abs
 ```
 cd src/SpMP
 make
+cd ../libxsmm
+make
 ```
 
 3) Build Caffe as usual

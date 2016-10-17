@@ -49,13 +49,14 @@ layer {
 #  }
   data_param {
     source: "examples/imagenet/ilsvrc12_val_lmdb"
-    batch_size: 64 # batch size should be a multiple of 64 to use SPMDM mode in InnerProduct layers
+    #batch_size: 264 # for 44c pcl-hsw3. batch size should be a multiple of 8 to use SPMDM mode in InnerProduct layers
+    batch_size: 256 # for pcl-knl03 (use 64 cores out of 68). batch size should be a multiple of 8 to use SPMDM mode in InnerProduct layers
     backend: LMDB
   }
 }
 layer {
   name: "conv1"
-  type: "ConvolutionReLUPoolLRN"
+  type: "Convolution"
   bottom: "data"
   top: "conv1"
   param {
@@ -80,11 +81,29 @@ layer {
     }
     conv_mode: DIRECT_DCONV # direct dense convolution w/o lowering
   }
+}
+layer {
+  name: "relu1"
+  type: "ReLU"
+  bottom: "conv1"
+  top: "conv1"
+}
+layer {
+  name: "pool1"
+  type: "Pooling"
+  bottom: "conv1"
+  top: "pool1"
   pooling_param {
     pool: MAX
     kernel_size: 3
     stride: 2
   }
+}
+layer {
+  name: "norm1"
+  type: "LRN"
+  bottom: "pool1"
+  top: "norm1"
   lrn_param {
     local_size: 5
     alpha: 0.0001
@@ -94,7 +113,7 @@ layer {
 layer {
   name: "conv2"
   type: "ConvolutionReLUPoolLRN"
-  bottom: "conv1"
+  bottom: "norm1"
   top: "conv2"
   param {
     lr_mult: 1

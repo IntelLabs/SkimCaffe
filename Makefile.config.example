@@ -87,8 +87,8 @@ PYTHON_LIB := /usr/lib
 # WITH_PYTHON_LAYER := 1
 
 # Whatever else you find you need goes here.
-INCLUDE_DIRS := $(PYTHON_INCLUDE) /usr/local/include src $(CUDA_DIR)/include
-LIBRARY_DIRS := $(PYTHON_LIB) /usr/local/lib /usr/lib src/SpMP $(CUDA_DIR)/lib64
+INCLUDE_DIRS := $(PYTHON_INCLUDE) /usr/local/include src src/libxsmm/include $(CUDA_DIR)/include
+LIBRARY_DIRS := $(PYTHON_LIB) /usr/local/lib /usr/lib src/SpMP src/libxsmm/lib $(CUDA_DIR)/lib64
 
 # If Homebrew is installed at a non standard location (for example your home directory) and you use it for general dependencies
 # INCLUDE_DIRS += $(shell brew --prefix)/include

@@ -8,6 +8,9 @@
 #include "caffe/proto/caffe.pb.h"
 #include "caffe/util/im2col.hpp"
 
+#include "libxsmm.h"
+#define MAX_THREADS (2048)
+
 namespace caffe {
 
 /**
@@ -206,6 +209,13 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   vector<int *> weight_rowptr_blocked_;
   vector<int *> weight_colidx_blocked_;
   vector<Dtype *> weight_values_blocked_;
+
+  /** direct dense convolution with libxsmm */
+  libxsmm_dnn_conv_desc libxsmm_conv_desc_;
+  libxsmm_dnn_conv_handle *libxsmm_handle_[MAX_THREADS];
+  libxsmm_dnn_buffer *libxsmm_input_[MAX_THREADS];
+  libxsmm_dnn_buffer *libxsmm_output_[MAX_THREADS];
+  libxsmm_dnn_filter *libxsmm_filter_;
 };
 
 }  // namespace caffe
