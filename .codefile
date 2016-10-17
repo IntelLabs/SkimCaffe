@@ -1,0 +1,15 @@
+*.c
+*.cpp
+*.h
+*.hpp
+*.f
+*.F90
+*.fh
+*.sh
+*.py
+*.env
+*.yml
+.codecov
+.codefile
+Makefile
+Makefile.inc
