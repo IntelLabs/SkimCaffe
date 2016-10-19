@@ -92,16 +92,47 @@ void print_matrix(const Dtype *A, int m, int n, int lda)
 {
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
-      printf("%g ", A[i*lda + j]);
+      fprintf(stderr, "%g ", A[i*lda + j]);
     }
-    printf("\n");
+    fprintf(stderr, "\n");
   }
+}
+
+template<typename Dtype>
+void print_matrix(std::ostringstream& str, const Dtype *A, int m, int n, int lda)
+{
+  for (int i = 0; i < m; ++i) {
+    for (int j = 0; j < n; ++j) {
+      str << A[i*lda + j] << " ";
+    }
+    str << std::endl;
+  }
+}
+
+template <typename Dtype>
+const boost::shared_ptr<caffe::Blob<Dtype> > get_transpose_of(
+  const Dtype *data, int m, int n)
+{
+  std::vector<int> shape;
+  shape.push_back(n);
+  shape.push_back(m);
+  boost::shared_ptr<caffe::Blob<Dtype> > blob(new caffe::Blob<Dtype>(shape));
+
+  transpose(blob->mutable_cpu_data(), data, m, n);
+
+  return blob;
 }
 
 template<typename Dtype>
 void print_matrix(const Dtype *A, int m, int n)
 {
   return print_matrix(A, m, n, n);
+}
+
+template<typename Dtype>
+void print_matrix(std::ostringstream& str, const Dtype *A, int m, int n)
+{
+  return print_matrix(str, A, m, n, n);
 }
 
 template <typename Dtype>
@@ -132,692 +163,361 @@ void potrs(const char *uplo, const int *n, const int *nrhs, const double *a, con
   dpotrs(uplo, n, nrhs, a, lda, b, ldb, info);
 }
 
-const double G_4x4_3x3[6*3] = {
-   1./ 4.,       0,      0,
-  -1./ 6., -1./ 6., -1./6.,
-  -1./ 6.,  1./ 6., -1./6.,
-   1./24.,  1./12.,  1./6.,
-   1./24., -1./12.,  1./6.,
-        0,       0,      1,
+template<int K>
+struct WinogradParameters
+{
 };
 
-const double G_4x4_5x5[8*5] = {
-         1,       0,       0,       0,        0,
-  -2.f/ 9., -2./ 9., -2./ 9., -2./ 9., -2./  9.,
-  -2.f/ 9.,  2./ 9., -2./ 9.,  2./ 9., -2./  9.,
-   1.f/90.,  1./45.,  2./45.,  4./45.,  8./ 45.,
-   1.f/90., -1./45.,  2./45., -4./45.,  8./ 45.,
-   4.f/45.,  2./45.,  1./45.,  1./90.,  1./180.,
-   4.f/45., -2./45.,  1./45., -1./90.,  1./180.,
-         0,       0,       0,       0,        1,
+template<>
+struct WinogradParameters<3>
+{
+  static const int M = 6;
+  static const int N = 3;
+
+  static const double *getG() {
+    static const double G[M*N] = {
+       1./ 4.,       0,      0,
+      -1./ 6., -1./ 6., -1./6.,
+      -1./ 6.,  1./ 6., -1./6.,
+       1./24.,  1./12.,  1./6.,
+       1./24., -1./12.,  1./6.,
+            0,       0,      1,
+    };
+    return G;
+  }
 };
 
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_3x3()
+template<>
+struct WinogradParameters<5>
 {
-  const int M = 6;
-  const int N = 3;
+  static const int M = 8;
+  static const int N = 5;
 
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<Dtype> > G_kron_G;
+  static const double *getG() {
+    static const double G[M*N] = {
+             1,       0,       0,       0,        0,
+      -2.f/ 9., -2./ 9., -2./ 9., -2./ 9., -2./  9.,
+      -2.f/ 9.,  2./ 9., -2./ 9.,  2./ 9., -2./  9.,
+       1.f/90.,  1./45.,  2./45.,  4./45.,  8./ 45.,
+       1.f/90., -1./45.,  2./45., -4./45.,  8./ 45.,
+       4.f/45.,  2./45.,  1./45.,  1./90.,  1./180.,
+       4.f/45., -2./45.,  1./45., -1./90.,  1./180.,
+             0,       0,       0,       0,        1,
+    };
+    return G;
+  }
+};
 
-  if (!initialized) {
-    std::vector<int> shape;
-    shape.push_back(M*M);
-    shape.push_back(N*N);
-    G_kron_G = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+template<typename Dtype>
+class WinogradGKronG
+{
+private :
+  const double *G;
 
-    kronecker_product(G_kron_G->mutable_cpu_data(), G_4x4_3x3, G_4x4_3x3, M, N, M, N);
-    initialized = true;
+  WinogradGKronG(int K) : K(K) {
+    if (3 == K) {
+      M = WinogradParameters<3>::M;
+      N = WinogradParameters<3>::N;
+      G = WinogradParameters<3>::getG();
+    }
+    else if (5 == K) {
+      M = WinogradParameters<5>::M;
+      N = WinogradParameters<5>::N;
+      G = WinogradParameters<5>::getG();
+    }
+    else {
+      assert(false);
+      M = 0;
+      N = 0;
+      G = NULL;
+    }
   }
 
-  return G_kron_G;
-}
+  boost::shared_ptr<caffe::Blob<Dtype> > GKronG;
+  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
+  boost::shared_ptr<caffe::Blob<Dtype> > transposeNormalizedWithInv;
+  boost::shared_ptr<caffe::Blob<Dtype> > normOfRows;
 
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_3x3_row_wise_l2norm()
-{
-  const int M = 6;
-  const int N = 3;
+  boost::shared_ptr<Dtype> inv;
+  boost::shared_ptr<caffe::Blob<Dtype> > invTranspose;
+  boost::shared_ptr<caffe::Blob<Dtype> > normOfInvCols;
 
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<Dtype> > row_wise_l2norm;
+public :
+  const int K;
+  int M, N;
 
-  if (!initialized) {
-    std::vector<int> shape;
-    shape.push_back(M*M);
-    row_wise_l2norm = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
-    Dtype *row_wise_l2norm_data = row_wise_l2norm->mutable_cpu_data();
-
-    const double *G_kron_G = get_G_kron_G_4x4_3x3<double>()->cpu_data();
-    for (int i = 0; i < M*M; ++i) {
-      double sum = 0;
-      for (int j = 0; j < N*N; ++j) {
-        sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
+  static WinogradGKronG *getInstance(int K) {
+    static WinogradGKronG *instances[16] = { NULL };
+    if (3 == K) {
+      if (instances[3] == NULL) {
+        instances[3] = new WinogradGKronG(3);
       }
-      row_wise_l2norm_data[i] = sqrt(sum);
+      return instances[3];
     }
-
-    initialized = true;
-  }
-
-  return row_wise_l2norm;
-}
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_5x5()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<Dtype> > G_kron_G;
-
-  if (!initialized) {
-    std::vector<int> shape;
-    shape.push_back(M*M);
-    shape.push_back(N*N);
-    G_kron_G = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
-
-    kronecker_product(G_kron_G->mutable_cpu_data(), G_4x4_5x5, G_4x4_5x5, M, N, M, N);
-    initialized = true;
-  }
-
-  return G_kron_G;
-}
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_4x4_5x5_row_wise_l2norm()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<Dtype> > row_wise_l2norm;
-
-  if (!initialized) {
-    std::vector<int> shape;
-    shape.push_back(M*M);
-    row_wise_l2norm = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
-    Dtype *row_wise_l2norm_data = row_wise_l2norm->mutable_cpu_data();
-
-    const double *G_kron_G = get_G_kron_G_4x4_5x5<double>()->cpu_data();
-    for (int i = 0; i < M*M; ++i) {
-      double sum = 0;
-      for (int j = 0; j < N*N; ++j) {
-        sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
+    else if (5 == K) {
+      if (instances[5] == NULL) {
+        instances[5] = new WinogradGKronG(5);
       }
-      row_wise_l2norm_data[i] = sqrt(sum);
+      return instances[5];
+    }
+    else {
+      assert(false);
+      return NULL;
+    }
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > get() {
+    if (NULL == GKronG.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      shape.push_back(N*N);
+      GKronG = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+
+      kronecker_product(GKronG->mutable_cpu_data(), G, G, M, N, M, N);
     }
 
-    initialized = true;
+    return GKronG;
   }
 
-  return row_wise_l2norm;
-}
+  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
+    if (NULL == transpose.get()) {
+      transpose = get_transpose_of(get()->cpu_data(), M*M, N*N);
+    }
 
-template <typename Dtype>
-double get_l2_norm_of(const caffe::Blob<Dtype> *A)
-{
-  double sum = 0;
-  const Dtype *Aptr = A->cpu_data();
-  for (int i = 0; i < A->count(); ++i) {
-    sum += ((double)Aptr[i])*((double)Aptr[i]);
+    return transpose;
   }
-  return sqrt((double)sum);
-}
+//
+//  template <typename Dtype>
+//  static const boost::shared_ptr<caffe::Blob<Dtype> > getNormalizedTranspose() {
+//    static bool initialized = false;
+//    static boost::shared_ptr<caffe::Blob<float> > GKronGTranspose;
+//
+//    if (!initialized) {
+//      const double *normOfRows = getNormOfRows<double>()->cpu_data();
+//      const double *GKronG = get<double>()->cpu_data();
+//      Dtype temp[(M*M)*(N*N)];
+//
+//      for (int i = 0; i < M*M; ++i) {
+//        for (int j = 0; j < N*N; ++j) {
+//          temp[i*N*N + j] = GKronG[i*N*N + j]/normOfRows[i];
+//        }
+//      }
+//
+//      GKronGTranspose = get_transpose_of(temp, M*M, N*N);
+//      initialized = true;
+//    }
+//
+//    return GKronGTranspose;
+//  }
+//
+  const boost::shared_ptr<caffe::Blob<Dtype> > getTransposeNormalizedWithInv() {
+    if (NULL == transposeNormalizedWithInv.get()) {
+      const double *normOfCols = WinogradGKronG<double>::getInstance(K)->getNormOfInvCols()->cpu_data();
+      const double *GKronG = WinogradGKronG<double>::getInstance(K)->get()->cpu_data();
+      Dtype temp[(M*M)*(N*N)];
 
-double get_Frob_norm_of_G_kron_G_4x4_3x3()
-{
-  static bool initialized = false;
-  static double ret = 0;
-  if (!initialized) {
-    ret = get_l2_norm_of(get_G_kron_G_4x4_3x3<double>().get());
-    LOG(INFO) << "||G \\kron G|| " << ret;
-    initialized = true;
-  }
-  return ret;
-}
+      for (int i = 0; i < M*M; ++i) {
+        for (int j = 0; j < N*N; ++j) {
+          temp[i*N*N + j] = GKronG[i*N*N + j]*normOfCols[i];
+        }
+      }
 
-double get_Frob_norm_of_G_kron_G_4x4_5x5()
-{
-  static bool initialized = false;
-  static double ret = 0;
-  if (!initialized) {
-    ret = get_l2_norm_of(get_G_kron_G_4x4_5x5<double>().get());
-    LOG(INFO) << "||G \\kron G|| " << ret;
-    initialized = true;
-  }
-  return ret;
-}
+      transposeNormalizedWithInv = get_transpose_of(temp, M*M, N*N);
+    }
 
-static bool NORMALIZE_WINOGRAD_FACTORS = true;
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_transpose_of(
-  const Dtype *data, int m, int n)
-{
-  std::vector<int> shape;
-  shape.push_back(n);
-  shape.push_back(m);
-  boost::shared_ptr<caffe::Blob<Dtype> > blob(new caffe::Blob<Dtype>(shape));
-
-  transpose(blob->mutable_cpu_data(), data, m, n);
-
-  return blob;
-}
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_transpose_4x4_3x3();
-
-template <>
-const boost::shared_ptr<caffe::Blob<double> > get_G_kron_G_transpose_4x4_3x3()
-{
-  NOT_IMPLEMENTED;
-  return boost::shared_ptr<caffe::Blob<double> >();
-}
-
-template <>
-const boost::shared_ptr<caffe::Blob<float> > get_G_kron_G_transpose_4x4_3x3()
-{
-  const int M = 6;
-  const int N = 3;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<float> > G_kron_G_transpose;
-
-  if (!initialized) {
-    G_kron_G_transpose =
-      get_transpose_of(get_G_kron_G_4x4_3x3<float>()->cpu_data(), M*M, N*N);
-    initialized = true;
+    return transposeNormalizedWithInv;
   }
 
-  return G_kron_G_transpose;
-}
+  const boost::shared_ptr<caffe::Blob<Dtype> > getNormOfRows() {
+    if (NULL == normOfRows.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      normOfRows = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+      Dtype *row_wise_l2norm_data = normOfRows->mutable_cpu_data();
 
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_G_kron_G_transpose_4x4_5x5();
+      const double *G_kron_G = get()->cpu_data();
+      for (int i = 0; i < M*M; ++i) {
+        double sum = 0;
+        for (int j = 0; j < N*N; ++j) {
+          sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
+        }
+        row_wise_l2norm_data[i] = sqrt(sum);
+      }
+    }
 
-template <>
-const boost::shared_ptr<caffe::Blob<double> > get_G_kron_G_transpose_4x4_5x5()
-{
-  NOT_IMPLEMENTED;
-  return boost::shared_ptr<caffe::Blob<double> >();
-}
-
-template <>
-const boost::shared_ptr<caffe::Blob<float> > get_G_kron_G_transpose_4x4_5x5()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<float> > G_kron_G_transpose;
-
-  if (!initialized) {
-    G_kron_G_transpose =
-      get_transpose_of(get_G_kron_G_4x4_5x5<float>()->cpu_data(), M*M, N*N);
-    initialized = true;
+    return normOfRows;
   }
 
-  return G_kron_G_transpose;
-}
+//  static double getFrobNorm() {
+//    static bool initialized = false;
+//    static double ret = 0;
+//    if (!initialized) {
+//      double sum = 0;
+//      double *A = get<double>()->cpu_data();
+//      for (int i = 0; i < get<double>()->count(); ++i) {
+//        sum += ((double)A[i])*((double)A[i]);
+//      }
+//      ret = sqrt((double)sum)
+//      LOG(INFO) << "||G \\kron G|| " << ret;
+//      initialized = true;
+//    }
+//    return ret;
+//  }
 
-template <typename Dtype>
-const Dtype *get_GGTInv_4x4_3x3();
+  const Dtype *getInv() {
+    if (NULL == inv.get()) {
+      inv.reset(new Dtype[(N*N)*(M*M)]);
 
-template <>
-const double *get_GGTInv_4x4_3x3()
-{
-  const int M = 6;
-  const int N = 3;
+      double S[N*N];
+      double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
+      double superb[N*N - 1];
 
-  static bool initialized = false;
-  static double GGTInv[(N*N)*(M*M)];
+      double A_temp[(M*M)*(N*N)];
+      memcpy(A_temp, WinogradGKronG<double>::getInstance(K)->get()->cpu_data(), sizeof(A_temp));
+      // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+      MKL_INT info = LAPACKE_dgesvd(
+        LAPACK_ROW_MAJOR, 'S', 'A',
+        M*M, N*N,
+        A_temp, N*N,
+        S,
+        U, N*N,
+        VT, N*N,
+        superb);
+      if (info > 0) {
+        LOG(FATAL) << "SVD failed to converge with return value " << info;
+      }
 
-  if (!initialized) {
-#define COMPUTE_PINV_WITH_SVD
-#ifdef COMPUTE_PINV_WITH_SVD
-    double S[N*N];
-    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
-    double superb[N*N - 1];
+      double S_pinv[(N*N)*(N*N)];
+      memset(S_pinv, 0, sizeof(S_pinv));
+      for (int i = 0; i < N*N; ++i) {
+        S_pinv[i*N*N + i] = 1/S[i];
+      }
+
+      double V_times_S_pinv[(N*N)*(N*N)];
+
+      double alpha = 1, beta = 0;
+      int m = N*N, n = N*N, k = N*N;
+      int lda = k, ldb = n, ldc = n;
+      cblas_dgemm(
+        CblasRowMajor, CblasTrans, CblasNoTrans,
+        m, n, k,
+        alpha, VT, lda,
+        S_pinv, ldb,
+        beta, V_times_S_pinv, ldc);
+
+      double A_inv_temp[(N*N)*(M*M)];
+      m = N*N, n = M*M, k = N*N;
+      lda = k, ldb = k, ldc = n;
+      cblas_dgemm(
+        CblasRowMajor, CblasNoTrans, CblasTrans,
+        m, n, k,
+        alpha, V_times_S_pinv, lda,
+        U, ldb,
+        beta, A_inv_temp, ldc);
+
+      for (int i = 0; i < (N*N)*(M*M); ++i) {
+        inv.get()[i] = A_inv_temp[i];
+      }
+    }
+
+    return inv.get();
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > getTransposeOfInv() {
+    if (NULL == invTranspose.get()) {
+      invTranspose = get_transpose_of(getInv(), N*N, M*M);
+    }
+
+    return invTranspose;
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > getNormOfInvCols() {
+    if (NULL == normOfInvCols.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      normOfInvCols = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+      Dtype *col_wise_l2norm_data = normOfInvCols->mutable_cpu_data();
+
+      const double *GGTInv = WinogradGKronG<double>::getInstance(K)->getInv();
+      for (int i = 0; i < M*M; ++i) {
+        double sum = 0;
+        for (int j = 0; j < N*N; ++j) {
+          sum += GGTInv[j*M*M + i]*GGTInv[j*M*M + i];
+        }
+        col_wise_l2norm_data[i] = sqrt(sum);
+      }
+    }
+
+    return normOfInvCols;
+  }
+
+  /**
+   * @param weight_input weights in time domain that is going to be updated according
+   *                     to sparsity pattern in mask
+   * @param mask 0 element means it's thresholded
+   */
+  void imposeSparsity(Dtype *weight_inout, const Dtype *mask) {
+    const double *A = WinogradGKronG<double>::getInstance(K)->get()->cpu_data();
 
     double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, get_G_kron_G_4x4_3x3<double>()->cpu_data(), sizeof(A_temp));
-    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
+    int zero_cnt = 0;
+    for (int i = 0; i < M*M; ++i) {
+      if (mask[i] == 0) {
+        for (int j = 0; j < N*N; ++j) {
+          A_temp[zero_cnt*N*N + j] = A[i*N*N + j];
+        }
+        ++zero_cnt;
+      }
+    }
+
+    int rank = std::min(zero_cnt, N*N);
+
+    double S[rank];
+    double U[(M*M)*rank], VT[(N*N)*(N*N)];
+    double superb[N*N - 1];
+
     MKL_INT info = LAPACKE_dgesvd(
-      LAPACK_ROW_MAJOR, 'S', 'A',
-      M*M, N*N,
+      LAPACK_ROW_MAJOR, 'S', 'S',
+      zero_cnt, N*N,
       A_temp, N*N,
       S,
-      U, N*N,
+      U, rank,
       VT, N*N,
       superb);
     if (info > 0) {
       LOG(FATAL) << "SVD failed to converge with return value " << info;
     }
 
-    double S_pinv[(N*N)*(N*N)];
-    memset(S_pinv, 0, sizeof(S_pinv));
+//    fprintf(stderr, "eigenvalues: "); print_matrix(S, 1, rank);
+    int rank_truncated = rank;
+    for (int k = 0; k < rank; ++k) {
+      if (S[k] < 1e-5) {
+        rank_truncated = k;
+        break;
+      }
+    }
+//    fprintf(stderr, "VT\n"); print_matrix(VT, rank, N*N);
+
+    Dtype weight_temp[N*N];
+    memcpy(weight_temp, weight_inout, N*N*sizeof(Dtype));
+
+//    double V_times_VT[(N*N)*(N*N)];
+//    fprintf(stderr, "V_times_VT\n");
     for (int i = 0; i < N*N; ++i) {
-      S_pinv[i*N*N + i] = 1/S[i];
+      double acc = weight_temp[i];
+      for (int j = 0; j < N*N; ++j) {
+        double sum = 0;
+        for (int k = 0; k < rank_truncated; ++k) {
+          sum += VT[k*N*N + i]*VT[k*N*N + j];
+        }
+//        fprintf(stderr, "%g ", sum);
+        acc -= sum*weight_temp[j];
+      }
+//      fprintf(stderr, "\n");
+      weight_inout[i] = acc;
     }
-
-    double V_times_S_pinv[(N*N)*(N*N)];
-
-    double alpha = 1, beta = 0;
-    int m = N*N, n = N*N, k = N*N;
-    int lda = k, ldb = n, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasTrans, CblasNoTrans,
-      m, n, k,
-      alpha, VT, lda,
-      S_pinv, ldb,
-      beta, V_times_S_pinv, ldc);
-
-    m = N*N, n = M*M, k = N*N;
-    lda = k, ldb = k, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasNoTrans, CblasTrans,
-      m, n, k,
-      alpha, V_times_S_pinv, lda,
-      U, ldb,
-      beta, GGTInv, ldc);
-#else
-    // A = (G \kron G^T)
-    const double *A = get_G_kron_G_4x4_3x3<double>()->cpu_data();
-
-    // A^T * A
-    double ATA[(N*N)*(N*N)];
-    atb(ATA, A, A, N*N, N*N, M*M);
-
-    // Cholesky factorization to compute (A^T * A)^-1
-    char uplo = 'L';
-    int order = N*N;
-    int lda = N*N;
-    int info;
-    potrf(&uplo, &order, ATA, &lda, &info);
-    if (info) {
-      LOG(FATAL) << "potrf returned " << info;
-    }
-
-    // Solve (A^T * A)^-1 * A^T
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, A, sizeof(A_temp));
-    int nrhs = M*M;
-    int ldb = N*N;
-    potrs(&uplo, &order, &nrhs, ATA, &lda, A_temp, &ldb, &info);
-      // potrs expects column-major so passing A_temp (initialized as A)
-      // in row-major effectively passes A^T
-    if (info) {
-      LOG(FATAL) << "potrs returned " << info;
-    }
-    transpose(GGTInv, A_temp, M*M, N*N);
-#endif
-
-    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
-
-    initialized = true;
   }
 
-  return GGTInv;
-}
-
-template <>
-const float *get_GGTInv_4x4_3x3()
-{
-  const int M = 6;
-  const int N = 3;
-
-  static bool initialized = false;
-  static float GGTInv[(N*N)*(M*M)];
-
-  if (!initialized) {
-#ifdef COMPUTE_PINV_WITH_SVD
-    double S[N*N];
-    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
-    double superb[N*N - 1];
-
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, get_G_kron_G_4x4_3x3<double>()->cpu_data(), sizeof(A_temp));
-    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
-    MKL_INT info = LAPACKE_dgesvd(
-      LAPACK_ROW_MAJOR, 'S', 'A',
-      M*M, N*N,
-      A_temp, N*N,
-      S,
-      U, N*N,
-      VT, N*N,
-      superb);
-    if (info > 0) {
-      LOG(FATAL) << "SVD failed to converge with return value " << info;
-    }
-
-    double S_pinv[(N*N)*(N*N)];
-    memset(S_pinv, 0, sizeof(S_pinv));
-    for (int i = 0; i < N*N; ++i) {
-      S_pinv[i*N*N + i] = 1/S[i];
-    }
-
-    double V_times_S_pinv[(N*N)*(N*N)];
-
-    double alpha = 1, beta = 0;
-    int m = N*N, n = N*N, k = N*N;
-    int lda = k, ldb = n, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasTrans, CblasNoTrans,
-      m, n, k,
-      alpha, VT, lda,
-      S_pinv, ldb,
-      beta, V_times_S_pinv, ldc);
-
-    double GGTInv_double[(N*N)*(M*M)];
-    m = N*N, n = M*M, k = N*N;
-    lda = k, ldb = k, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasNoTrans, CblasTrans,
-      m, n, k,
-      alpha, V_times_S_pinv, lda,
-      U, ldb,
-      beta, GGTInv_double, ldc);
-
-    for (int i = 0; i < (N*N)*(M*M); ++i) {
-      GGTInv[i] = GGTInv_double[i];
-    }
-#else
-    // A = (G \kron G^T)
-    const double *A = get_G_kron_G_4x4_3x3<double>()->cpu_data();
-
-    // A^T * A
-    double ATA[(N*N)*(N*N)];
-    atb(ATA, A, A, N*N, N*N, M*M);
-
-    // Cholesky factorization to compute (A^T * A)^-1
-    char uplo = 'L';
-    int order = N*N;
-    int lda = N*N;
-    int info;
-    potrf(&uplo, &order, ATA, &lda, &info);
-    if (info) {
-      LOG(FATAL) << "potrf returned " << info;
-    }
-
-    // Solve (A^T * A)^-1 * A^T
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, A, sizeof(A_temp));
-    int nrhs = M*M;
-    int ldb = N*N;
-    potrs(&uplo, &order, &nrhs, ATA, &lda, A_temp, &ldb, &info);
-      // potrs expects column-major so passing A_temp (initialized as A)
-      // in row-major effectively passes A^T
-    if (info) {
-      LOG(FATAL) << "potrs returned " << info;
-    }
-    transpose_to_float(GGTInv, A_temp, M*M, N*N);
-#endif
-
-    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
-
-    initialized = true;
-  }
-
-  return GGTInv;
-}
-
-template <typename Dtype>
-const Dtype *get_GGTInv_4x4_5x5();
-
-template <>
-const double *get_GGTInv_4x4_5x5()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static double GGTInv[(N*N)*(M*M)];
-
-  if (!initialized) {
-#ifdef COMPUTE_PINV_WITH_SVD
-    double S[N*N];
-    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
-    double superb[N*N - 1];
-
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, get_G_kron_G_4x4_5x5<double>()->cpu_data(), sizeof(A_temp));
-    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
-    MKL_INT info = LAPACKE_dgesvd(
-      LAPACK_ROW_MAJOR, 'S', 'A',
-      M*M, N*N,
-      A_temp, N*N,
-      S,
-      U, N*N,
-      VT, N*N,
-      superb);
-    if (info > 0) {
-      LOG(FATAL) << "SVD failed to converge with return value " << info;
-    }
-
-    double S_pinv[(N*N)*(N*N)];
-    memset(S_pinv, 0, sizeof(S_pinv));
-    for (int i = 0; i < N*N; ++i) {
-      S_pinv[i*N*N + i] = 1/S[i];
-    }
-
-    double V_times_S_pinv[(N*N)*(N*N)];
-
-    double alpha = 1, beta = 0;
-    int m = N*N, n = N*N, k = N*N;
-    int lda = k, ldb = n, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasTrans, CblasNoTrans,
-      m, n, k,
-      alpha, VT, lda,
-      S_pinv, ldb,
-      beta, V_times_S_pinv, ldc);
-
-    m = N*N, n = M*M, k = N*N;
-    lda = k, ldb = k, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasNoTrans, CblasTrans,
-      m, n, k,
-      alpha, V_times_S_pinv, lda,
-      U, ldb,
-      beta, GGTInv, ldc);
-#else
-    // A = (G \kron G^T)
-    const double *A = get_G_kron_G_4x4_5x5<double>()->cpu_data();
-
-    // A^T * A
-    double ATA[(N*N)*(N*N)];
-    atb(ATA, A, A, N*N, N*N, M*M);
-
-    // Cholesky factorization to compute (A^T * A)^-1
-    char uplo = 'L';
-    int order = N*N;
-    int lda = N*N;
-    int info;
-    potrf(&uplo, &order, ATA, &lda, &info);
-    if (info) {
-      LOG(FATAL) << "potrf returned " << info;
-    }
-
-    // Solve (A^T * A)^-1 * A^T
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, A, sizeof(A_temp));
-    int nrhs = M*M;
-    int ldb = N*N;
-    potrs(&uplo, &order, &nrhs, ATA, &lda, A_temp, &ldb, &info);
-      // potrs expects column-major so passing A_temp (initialized as A)
-      // in row-major effectively passes A^T
-    if (info) {
-      LOG(FATAL) << "potrs returned " << info;
-    }
-    transpose(GGTInv, A_temp, M*M, N*N);
-#endif
-
-    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
-
-    initialized = true;
-  }
-
-  return GGTInv;
-}
-
-template <>
-const float *get_GGTInv_4x4_5x5()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static float GGTInv[(N*N)*(M*M)];
-
-  if (!initialized) {
-#ifdef COMPUTE_PINV_WITH_SVD
-    double S[N*N];
-    double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
-    double superb[N*N - 1];
-
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, get_G_kron_G_4x4_5x5<double>()->cpu_data(), sizeof(A_temp));
-    // NOTE: A_temp will be overwritten by LAPACKE_dgesvd
-    MKL_INT info = LAPACKE_dgesvd(
-      LAPACK_ROW_MAJOR, 'S', 'A',
-      M*M, N*N,
-      A_temp, N*N,
-      S,
-      U, N*N,
-      VT, N*N,
-      superb);
-    if (info > 0) {
-      LOG(FATAL) << "SVD failed to converge with return value " << info;
-    }
-
-    double S_pinv[(N*N)*(N*N)];
-    memset(S_pinv, 0, sizeof(S_pinv));
-    for (int i = 0; i < N*N; ++i) {
-      S_pinv[i*N*N + i] = 1/S[i];
-    }
-
-    double V_times_S_pinv[(N*N)*(N*N)];
-
-    double alpha = 1, beta = 0;
-    int m = N*N, n = N*N, k = N*N;
-    int lda = k, ldb = n, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasTrans, CblasNoTrans,
-      m, n, k,
-      alpha, VT, lda,
-      S_pinv, ldb,
-      beta, V_times_S_pinv, ldc);
-
-    double GGTInv_double[(N*N)*(M*M)];
-    m = N*N, n = M*M, k = N*N;
-    lda = k, ldb = k, ldc = n;
-    cblas_dgemm(
-      CblasRowMajor, CblasNoTrans, CblasTrans,
-      m, n, k,
-      alpha, V_times_S_pinv, lda,
-      U, ldb,
-      beta, GGTInv_double, ldc);
-
-    for (int i = 0; i < (N*N)*(M*M); ++i) {
-      GGTInv[i] = GGTInv_double[i];
-    }
-#else
-    // A = (G \kron G^T)
-    const double *A = get_G_kron_G_4x4_5x5<double>()->cpu_data();
-
-    // A^T * A
-    double ATA[(N*N)*(N*N)];
-    atb(ATA, A, A, N*N, N*N, M*M);
-
-    // Cholesky factorization to compute (A^T * A)^-1
-    char uplo = 'L';
-    int order = N*N;
-    int lda = N*N;
-    int info;
-    potrf(&uplo, &order, ATA, &lda, &info);
-    if (info) {
-      LOG(FATAL) << "potrf returned " << info;
-    }
-
-    // Solve (A^T * A)^-1 * A^T
-    double A_temp[(M*M)*(N*N)];
-    memcpy(A_temp, A, sizeof(A_temp));
-    int nrhs = M*M;
-    int ldb = N*N;
-    potrs(&uplo, &order, &nrhs, ATA, &lda, A_temp, &ldb, &info);
-      // potrs expects column-major so passing A_temp (initialized as A)
-      // in row-major effectively passes A^T
-    if (info) {
-      LOG(FATAL) << "potrs returned " << info;
-    }
-    transpose_to_float(GGTInv, A_temp, M*M, N*N);
-#endif
-
-    //printf("GGTInv\n"); print_matrix(GGTInv, N*N, M*M); printf("\n");
-
-    initialized = true;
-  }
-
-  return GGTInv;
-}
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_GGTInv_transpose_4x4_3x3();
-
-template <>
-const boost::shared_ptr<caffe::Blob<double> > get_GGTInv_transpose_4x4_3x3()
-{
-  NOT_IMPLEMENTED;
-  return boost::shared_ptr<caffe::Blob<double> >();
-}
-
-template <>
-const boost::shared_ptr<caffe::Blob<float> > get_GGTInv_transpose_4x4_3x3()
-{
-  const int M = 6;
-  const int N = 3;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<float> > GGTInv_transpose;
-
-  if (!initialized) {
-    GGTInv_transpose =
-      get_transpose_of(get_GGTInv_4x4_3x3<float>(), N*N, M*M);
-    initialized = true;
-  }
-
-  return GGTInv_transpose;
-}
-
-template <typename Dtype>
-const boost::shared_ptr<caffe::Blob<Dtype> > get_GGTInv_transpose_4x4_5x5();
-
-template <>
-const boost::shared_ptr<caffe::Blob<double> > get_GGTInv_transpose_4x4_5x5()
-{
-  NOT_IMPLEMENTED;
-  return boost::shared_ptr<caffe::Blob<double> >();
-}
-
-template <>
-const boost::shared_ptr<caffe::Blob<float> > get_GGTInv_transpose_4x4_5x5()
-{
-  const int M = 8;
-  const int N = 5;
-
-  static bool initialized = false;
-  static boost::shared_ptr<caffe::Blob<float> > GGTInv_transpose;
-
-  if (!initialized) {
-    GGTInv_transpose =
-      get_transpose_of(get_GGTInv_4x4_5x5<float>(), N*N, M*M);
-    initialized = true;
-  }
-
-  return GGTInv_transpose;
-}
+}; // WinogradGKronG
 
 #endif
