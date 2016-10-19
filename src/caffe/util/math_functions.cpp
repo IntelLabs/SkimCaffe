@@ -205,6 +205,16 @@ void caffe_div_checkzero<double>(const int n, const double* a, const double* b,
 }
 
 template <>
+void caffe_inv<float>(const int n, const float* a, float* y) {
+  vsInv(n, a, y);
+}
+
+template <>
+void caffe_inv<double>(const int n, const double* a, double* y) {
+  vdInv(n, a, y);
+}
+
+template <>
 void caffe_powx<float>(const int n, const float* a, const float b,
     float* y) {
   vsPowx(n, a, b, y);

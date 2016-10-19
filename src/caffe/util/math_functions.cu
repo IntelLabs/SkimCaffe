@@ -859,6 +859,13 @@ __global__ void div_checkzero_kernel(const int n, const Dtype* a,
   }
 }
 
+template <typename Dtype>
+__global__ void inv_kernel(const int n, const Dtype* a, Dtype* y) {
+  CUDA_KERNEL_LOOP(index, n) {
+    y[index] = 1 / a[index];
+  }
+}
+
 template <>
 void caffe_gpu_div<float>(const int N, const float* a,
     const float* b, float* y) {
@@ -889,6 +896,20 @@ void caffe_gpu_div_checkzero<double>(const int N, const double* a,
   // NOLINT_NEXT_LINE(whitespace/operators)
 	div_checkzero_kernel<double><<<CAFFE_GET_BLOCKS(N), CAFFE_CUDA_NUM_THREADS>>>(
       N, a, b, y);
+}
+
+template <>
+void caffe_gpu_inv<float>(const int N, const float* a, float* y) {
+  // NOLINT_NEXT_LINE(whitespace/operators)
+  inv_kernel<float><<<CAFFE_GET_BLOCKS(N), CAFFE_CUDA_NUM_THREADS>>>(
+      N, a, y);
+}
+
+template <>
+void caffe_gpu_inv<double>(const int N, const double* a, double* y) {
+  // NOLINT_NEXT_LINE(whitespace/operators)
+  inv_kernel<double><<<CAFFE_GET_BLOCKS(N), CAFFE_CUDA_NUM_THREADS>>>(
+      N, a, y);
 }
 
 template <typename Dtype>

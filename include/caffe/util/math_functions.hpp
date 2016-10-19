@@ -73,6 +73,9 @@ template <typename Dtype>
 void caffe_div_checkzero(const int N, const Dtype* a, const Dtype* b, Dtype* y);
 
 template <typename Dtype>
+void caffe_inv(const int N, const Dtype* a, Dtype* y);
+
+template <typename Dtype>
 void caffe_powx(const int n, const Dtype* a, const Dtype b, Dtype* y);
 
 template <typename Dtype>
@@ -295,6 +298,9 @@ void caffe_gpu_div(const int N, const Dtype* a, const Dtype* b, Dtype* y);
 
 template <typename Dtype>
 void caffe_gpu_div_checkzero(const int N, const Dtype* a, const Dtype* b, Dtype* y);
+
+template <typename Dtype>
+void caffe_gpu_inv(const int N, const Dtype* a, Dtype* y);
 
 template <typename Dtype>
 void caffe_gpu_abs(const int n, const Dtype* a, Dtype* y);
