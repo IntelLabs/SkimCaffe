@@ -262,7 +262,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
       regularization_type = local_regularization_type;
     }
 
-    if (regularization_type == "L1_DNS" || regularization_type == "L1_DNS_Winograd") {
+    if ((regularization_type == "L1_DNS" || regularization_type == "L1_DNS_Winograd") && param->num_axes() == 4) {
       if (unthresholded_[param_id] == NULL) {
         unthresholded_[param_id] = shared_ptr<Blob<Dtype> >(new Blob<Dtype>(param->shape()));
         memcpy(unthresholded_[param_id]->mutable_cpu_data(), param->cpu_data(), param->count()*sizeof(Dtype));
@@ -330,7 +330,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
             A->getTranspose()->cpu_data(),
             (Dtype)0, temp);
 
-#define PRESERVE_SPARSITY_AFTER_THRESHOLDING
+//#define PRESERVE_SPARSITY_AFTER_THRESHOLDING
 
           for (int i = 0; i < N*C; ++i) {
             int cnt = 0;
@@ -417,8 +417,18 @@ void SGDSolver<Dtype>::ApplyUpdate() {
           caffe_gpu_zerout(N*C*M*M, temp, thresholds, M*M, threshold_weight);
 
 #ifdef PRESERVE_SPARSITY_AFTER_THRESHOLDING
+          const Dtype *temp_cpu = temp_winograd_[param_id]->cpu_data();
+          Dtype *param_cpu = param->mutable_cpu_data();
           for (int i = 0; i < N*C; ++i) {
-            A->imposeSparsity(param->mutable_cpu_data() + i*K*K, temp_winograd_[param_id]->cpu_data() + i*M*M);
+            int cnt = 0;
+            for (int j = 0; j < M*M; ++j) {
+              if (temp_cpu[i*M*M + j] == 0) {
+                ++cnt;
+              }
+            }
+            if (cnt != 0 && cnt != M*M) {
+              A->imposeSparsity(param_cpu + i*K*K, temp_cpu + i*M*M);
+            }
           }
 #else
           caffe_gpu_gemm(
@@ -474,78 +484,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
         LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
       }
     }
-    else if (regularization_type == "L1") {
-      // hard threshold
-      Dtype thre_0 = Dtype(this->param_.prune_threshold());
-      Dtype* data_ptr_tmp = NULL;
-
-//#define ADJUSTED_REGULARIZATION
-#ifdef ADJUSTED_REGULARIZATION
-      Dtype *temp = NULL;
-      Dtype avg_abs_diff;
-
-      // adjust threshold based on derivatives
-      // use equation th(|dL/dW_i|) = 1/(alpha*|dL/dW_i| + beta), where dL/dW_i is the partial
-      // derivative of loss function w.r.t. ith parameter.
-      // Use alpha and beta such that th(avg(|dL/dW_i|)) = th_0 and th(0) = th_max
-      //  -> beta = 1/th_max
-      //     alpha = (1/th_0 - 1/th_max)/(avg(|dL/dW_i|))
-      Dtype thre_max = 10*thre_0;
-      Dtype alpha, beta = 1/thre_max;
-#endif
-
-      switch (Caffe::mode()) {
-      case Caffe::CPU:
-#ifdef ADJUSTED_REGULARIZATION
-        temp = temp_[param_id]->mutable_cpu_data();
-        avg_abs_diff = caffe_cpu_asum(param->count(), param->cpu_diff())/param->count();
-        alpha = (1/thre_0 - 1/thre_max)/avg_abs_diff;
-
-        caffe_abs(param->count(), param->cpu_diff(), temp);
-        caffe_scal(param->count(), alpha, temp);
-        caffe_add_scalar(param->count(), beta, temp);
-        caffe_inv(param->count(), temp, temp);
-#endif
-
-        data_ptr_tmp = static_cast<Dtype*>(param->mutable_cpu_data());
-        for(int i=0;i<param->count();i++){
-#ifdef ADJUSTED_REGULARIZATION
-            Dtype thre = temp[i];
-#else
-            Dtype thre = thre_0;
-#endif
-            if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
-                data_ptr_tmp[i]=0;
-            }
-        }
-        break;
-      case Caffe::GPU:
-#ifndef CPU_ONLY
-#ifdef ADJUSTED_REGULARIZATION
-        temp = temp_[param_id]->mutable_gpu_data();
-        caffe_gpu_asum(param->count(), param->cpu_diff(), &avg_abs_diff);
-        avg_abs_diff /= param->count();
-        alpha = (1/thre_0 - 1/thre_max)/avg_abs_diff;
-
-        caffe_gpu_abs(param->count(), param->gpu_diff(), temp);
-        caffe_gpu_scal(param->count(), alpha, temp);
-        caffe_gpu_add_scalar(param->count(), beta, temp);
-        caffe_gpu_inv(param->count(), temp, temp);
-
-        caffe_gpu_zerout(param->count(), param->mutable_gpu_data(), temp, param->count(), (Dtype)1);
-#else
-        caffe_gpu_zerout(param->mutable_gpu_data(),param->count(),thre_0);
-#endif
-#else
-        NO_GPU;
-#endif
-        break;
-      default:
-        LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
-      }
-      //this->net_->learnable_params()[param_id]->Zerout();
-    }
-    else if (regularization_type == "L1_DNS" || regularization_type == "L2_DNS") {
+    else if ((regularization_type == "L1_DNS" || regularization_type == "L2_DNS") && param->num_axes() == 4) {
       // hard threshold
       Dtype thre = Dtype(this->param_.prune_threshold());
       const Dtype* data_ptr_tmp = NULL;
@@ -574,7 +513,90 @@ void SGDSolver<Dtype>::ApplyUpdate() {
         LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
       }
     }
-    else if (regularization_type == "L2") {
+    else if (regularization_type == "L1" || regularization_type == "L1_DNS") {
+      if (regularization_type == "L1_DNS") {
+        LOG(WARNING) << "L1_DNS but not for convolution";
+      }
+      // hard threshold
+      Dtype thre_0 = Dtype(this->param_.prune_threshold());
+      Dtype* data_ptr_tmp = NULL;
+
+      Dtype *temp = NULL;
+      Dtype avg_abs_diff, thre_max, alpha, beta;
+      if (this->param_.max_threshold_factor() > 1) {
+
+        // adjust threshold based on derivatives
+        // use equation th(|dL/dW_i|) = 1/(alpha*|dL/dW_i| + beta), where dL/dW_i is the partial
+        // derivative of loss function w.r.t. ith parameter.
+        // Use alpha and beta such that th(avg(|dL/dW_i|)) = th_0 and th(0) = th_max
+        //  -> beta = 1/th_max
+        //     alpha = (1/th_0 - 1/th_max)/(avg(|dL/dW_i|))
+        thre_max = this->param_.max_threshold_factor()*thre_0;
+        beta = 1/thre_max;
+      }
+
+      switch (Caffe::mode()) {
+      case Caffe::CPU:
+        if (this->param_.max_threshold_factor() > 1) {
+          avg_abs_diff = caffe_cpu_asum(param->count(), param->cpu_diff())/param->count();
+          alpha = (1/thre_0 - 1/thre_max)/avg_abs_diff;
+
+          temp = temp_[param_id]->mutable_cpu_data();
+          caffe_abs(param->count(), param->cpu_diff(), temp);
+          caffe_scal(param->count(), alpha, temp);
+          caffe_add_scalar(param->count(), beta, temp);
+          caffe_inv(param->count(), temp, temp);
+        }
+
+        data_ptr_tmp = static_cast<Dtype*>(param->mutable_cpu_data());
+        if (this->param_.max_threshold_factor() > 1) {
+          for(int i=0;i<param->count();i++){
+            Dtype thre = temp[i];
+            if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
+              data_ptr_tmp[i]=0;
+            }
+          }
+        }
+        else {
+          for(int i=0;i<param->count();i++){
+            Dtype thre = thre_0;
+            if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
+              data_ptr_tmp[i]=0;
+            }
+          }
+        }
+        break;
+      case Caffe::GPU:
+#ifndef CPU_ONLY
+        if (this->param_.max_threshold_factor() > 1) {
+          caffe_gpu_asum(param->count(), param->gpu_diff(), &avg_abs_diff);
+          avg_abs_diff /= param->count();
+          alpha = (1/thre_0 - 1/thre_max)/avg_abs_diff;
+
+          temp = temp_[param_id]->mutable_gpu_data();
+          caffe_gpu_abs(param->count(), param->gpu_diff(), temp);
+          caffe_gpu_scal(param->count(), alpha, temp);
+          caffe_gpu_add_scalar(param->count(), beta, temp);
+          caffe_gpu_inv(param->count(), temp, temp);
+
+          caffe_gpu_zerout(param->count(), param->mutable_gpu_data(), temp, param->count(), (Dtype)1);
+        }
+        else {
+          caffe_gpu_zerout(param->mutable_gpu_data(),param->count(),thre_0);
+        }
+#else
+        NO_GPU;
+#endif
+        break;
+      default:
+        LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
+      }
+      //this->net_->learnable_params()[param_id]->Zerout();
+    }
+    else if (regularization_type == "L2" || regularization_type == "L2_DNS") {
+      if (regularization_type == "L2_DNS") {
+        LOG(WARNING) << "L2_DNS but not for convolution";
+      }
     }
     else {
       LOG(FATAL) << "Unknown regularization type: " << regularization_type;
