@@ -122,6 +122,150 @@ void PoolingLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
+template<typename Dtype, int STRIDE_H, int STRIDE_W, int KERNEL_H, int KERNEL_W, int PAD_H, int PAD_W>
+void pool_(const Dtype *input, Dtype *output, int *mask_output, int height, int width)
+{
+  int pooled_height =
+      static_cast<int>(ceil(static_cast<float>(height + 2 * PAD_H - KERNEL_H) / STRIDE_H)) + 1;
+  int pooled_width =
+      static_cast<int>(ceil(static_cast<float>(width + 2 * PAD_W - KERNEL_W) / STRIDE_W)) + 1;
+
+  int ph;
+  for (ph = 0; ph < PAD_H/STRIDE_H; ++ph) {
+    int hstart = ph * STRIDE_H - PAD_H;
+    int hend = hstart + KERNEL_H;
+    assert(hstart <= 0);
+    assert(hend <= height);
+    hstart = 0;
+
+    for (int pw = 0; pw < pooled_width; ++pw) {
+      int wstart = pw * STRIDE_W - PAD_W;
+      int wend = min(wstart + KERNEL_W, width);
+      wstart = max(wstart, 0);
+      Dtype maximum = -FLT_MAX;
+      int mask = -1;
+      for (int h = hstart; h < hend; ++h) {
+        for (int w = wstart; w < wend; ++w) {
+          const int index = h * width + w;
+          if (input[index] > maximum) {
+            maximum = input[index];
+            mask = index;
+          }
+        }
+      }
+      const int pool_index = ph * pooled_width + pw;
+      output[pool_index] = maximum;
+      mask_output[pool_index] = mask;
+    }
+  }
+
+  for ( ; ph < (height + PAD_H - KERNEL_H + STRIDE_H - 1)/STRIDE_H; ++ph) {
+    int hstart = ph * STRIDE_H - PAD_H;
+    int hend = hstart + KERNEL_H;
+    assert(hstart >= 0);
+    assert(hend <= height);
+
+    int pw;
+    for (pw = 0; pw < PAD_W/STRIDE_W; ++pw) {
+      int wstart = pw * STRIDE_W - PAD_W;
+      int wend = wstart + KERNEL_W;
+      assert(wstart <= 0);
+      assert(wend <= width);
+      wstart = 0;
+
+      Dtype maximum = -FLT_MAX;
+      int mask = -1;
+#pragma unroll_and_jam(KERNEL_H)
+      for (int h = hstart; h < hend; ++h) {
+        for (int w = wstart; w < wend; ++w) {
+          const int index = h * width + w;
+          if (input[index] > maximum) {
+            maximum = input[index];
+            mask = index;
+          }
+        }
+      }
+      const int pool_index = ph * pooled_width + pw;
+      output[pool_index] = maximum;
+      mask_output[pool_index] = mask;
+    }
+
+    for ( ; pw < (width + PAD_W - KERNEL_W + STRIDE_W - 1)/STRIDE_W; ++pw) {
+      int wstart = pw * STRIDE_W - PAD_W;
+      int wend = wstart + KERNEL_W;
+      assert(wstart >= 0);
+      assert(wend <= width);
+
+      Dtype maximum = -FLT_MAX;
+      int mask = -1;
+#pragma unroll(KERNEL_H)
+      for (int h = hstart; h < hend; ++h) {
+#pragma unroll(KERNEL_W)
+        for (int w = wstart; w < wend; ++w) {
+          const int index = h * width + w;
+          if (input[index] > maximum) {
+            maximum = input[index];
+            mask = index;
+          }
+        }
+      }
+      const int pool_index = ph * pooled_width + pw;
+      output[pool_index] = maximum;
+      mask_output[pool_index] = mask;
+    }
+
+    for ( ; pw < pooled_width; ++pw) {
+      int wstart = pw * STRIDE_W - PAD_W;
+      int wend = width;
+      assert(wstart >= 0);
+      assert(wstart + KERNEL_W >= width);
+
+      Dtype maximum = -FLT_MAX;
+      int mask = -1;
+#pragma unroll_and_jam(KERNEL_H)
+      for (int h = hstart; h < hend; ++h) {
+        for (int w = wstart; w < wend; ++w) {
+          const int index = h * width + w;
+          if (input[index] > maximum) {
+            maximum = input[index];
+            mask = index;
+          }
+        }
+      }
+      const int pool_index = ph * pooled_width + pw;
+      output[pool_index] = maximum;
+      mask_output[pool_index] = mask;
+    }
+  }
+
+  for ( ; ph < pooled_height; ++ph) {
+    int hstart = ph * STRIDE_H - PAD_H;
+    int hend = height;
+    assert(hstart >= 0);
+    assert(hstart + KERNEL_H >= height);
+
+    for (int pw = 0; pw < pooled_width; ++pw) {
+      int wstart = pw * STRIDE_W - PAD_W;
+      int wend = min(wstart + KERNEL_W, width);
+      wstart = max(wstart, 0);
+      Dtype maximum = -FLT_MAX;
+      int mask = -1;
+      for (int h = hstart; h < hend; ++h) {
+        for (int w = wstart; w < wend; ++w) {
+          const int index = h * width + w;
+          if (input[index] > maximum) {
+            maximum = input[index];
+            mask = index;
+          }
+        }
+      }
+      const int pool_index = ph * pooled_width + pw;
+      output[pool_index] = maximum;
+      mask_output[pool_index] = mask;
+    }
+  }
+}
+
 // TODO(Yangqing): Is there a faster way to do pooling in the channel-first
 // case?
 template <typename Dtype>
@@ -133,13 +277,13 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
   Dtype* top_mask = NULL;
+  int num = bottom[0]->num();
   // Different pooling methods. We explicitly do the switch outside the for
   // loop to save time, although this results in more code.
   switch (this->layer_param_.pooling_param().pool()) {
   case PoolingParameter_PoolMethod_MAX:
     int* mask = NULL;  // suppress warnings about uninitalized variables
     if (!use_top_mask) mask = max_idx_.mutable_cpu_data();
-    int num = bottom[0]->num();
     if (use_top_mask) {
       top_mask = top[1]->mutable_cpu_data();
 
@@ -192,6 +336,19 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
           Dtype *top_data_cur = top_data + top[0]->offset(0, 1)*(channels_*n + c);
           int *mask_cur = mask + top[0]->offset(0, 1)*(channels_*n + c);
 
+          if (stride_h_ == stride_w_ && kernel_h_ == kernel_w_ && pad_h_ == pad_w_) {
+            if (3 == kernel_w_) {
+              if (2 == stride_h_ && 3 == kernel_w_ && 0 == pad_h_) {
+                pool_<Dtype, 2, 2, 3, 3, 0, 0>(bottom_data_cur, top_data_cur, mask_cur, height_, width_);
+                continue;
+              }
+              else if (1 == stride_h_ && 1 == pad_h_) {
+                pool_<Dtype, 1, 1, 3, 3, 1, 1>(bottom_data_cur, top_data_cur, mask_cur, height_, width_);
+                continue;
+              }
+            }
+          }
+
           for (int ph = 0; ph < pooled_height_; ++ph) {
             int hstart = ph * stride_h_ - pad_h_;
             int hend = min(hstart + kernel_h_, height_);
@@ -222,12 +379,17 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     }
     break;
   case PoolingParameter_PoolMethod_AVE:
+#pragma omp parallel for
     for (int i = 0; i < top_count; ++i) {
       top_data[i] = 0;
     }
     // The main loop
-    for (int n = 0; n < bottom[0]->num(); ++n) {
+#pragma omp parallel for collapse(2)
+    for (int n = 0; n < num; ++n) {
       for (int c = 0; c < channels_; ++c) {
+        const Dtype *bottom_data_cur = bottom_data + bottom[0]->offset(0, 1)*(channels_*n + c);
+        Dtype *top_data_cur = top_data + top[0]->offset(0, 1)*(channels_*n + c);
+
         for (int ph = 0; ph < pooled_height_; ++ph) {
           for (int pw = 0; pw < pooled_width_; ++pw) {
             int hstart = ph * stride_h_ - pad_h_;
@@ -241,16 +403,13 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
             wend = min(wend, width_);
             for (int h = hstart; h < hend; ++h) {
               for (int w = wstart; w < wend; ++w) {
-                top_data[ph * pooled_width_ + pw] +=
-                    bottom_data[h * width_ + w];
+                top_data_cur[ph * pooled_width_ + pw] +=
+                    bottom_data_cur[h * width_ + w];
               }
             }
-            top_data[ph * pooled_width_ + pw] /= pool_size;
+            top_data_cur[ph * pooled_width_ + pw] /= pool_size;
           }
         }
-        // compute offset
-        bottom_data += bottom[0]->offset(0, 1);
-        top_data += top[0]->offset(0, 1);
       }
     }
     break;
