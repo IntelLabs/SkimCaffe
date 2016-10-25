@@ -111,9 +111,13 @@ void BaseConvolutionLayer<float>::WeightAlign(){
   int pad_h = pad_.cpu_data()[0];
   int pad_w = pad_.cpu_data()[1];
 
-  if (caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV == conv_param.conv_mode() ||
-      caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV == conv_param.conv_mode()) {
+  if (caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV == conv_param.conv_mode()) {
     int input_padded_len = conv_in_channels_ * (height + pad_h) * (width + pad_w) + pad_h * (width + 2 * pad_w);
+    posix_memalign((void **)&input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
+    memset(input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
+  }
+  else if (caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV == conv_param.conv_mode()) {
+    int input_padded_len = conv_in_channels_ * (height + 2*pad_h) * (width + 2*pad_w);
     posix_memalign((void **)&input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
     memset(input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
   }
@@ -352,21 +356,18 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 		    if (std::string(type()) != "Convolution") {
 		      LOG(FATAL) << "DIRECT_DCONV only supported for unfused Convolution layer";
 		    }
-		    if (pad_h != 0 || pad_w != 0) {
-		      LOG(FATAL) << "DIRECT_DCONV only supports zero input padding";
-		    }
 
 		    libxsmm_conv_desc_.N = 1;
 		    libxsmm_conv_desc_.C = conv_in_channels_;
-		    libxsmm_conv_desc_.H = height;
-		    libxsmm_conv_desc_.W = width;
+		    libxsmm_conv_desc_.H = height + 2*pad_h;
+		    libxsmm_conv_desc_.W = width + 2*pad_w;
 		    libxsmm_conv_desc_.K = M;
 		    libxsmm_conv_desc_.R = kernel_shape_.cpu_data()[0];
 		    libxsmm_conv_desc_.S = kernel_shape_.cpu_data()[1];
 		    libxsmm_conv_desc_.u = stride_.cpu_data()[0];
 		    libxsmm_conv_desc_.v = stride_.cpu_data()[1];
-		    libxsmm_conv_desc_.pad_h_in = pad_h;
-		    libxsmm_conv_desc_.pad_w_in = pad_w;
+		    libxsmm_conv_desc_.pad_h_in = 0; // pad_h;
+		    libxsmm_conv_desc_.pad_w_in = 0; // pad_w;
 		    libxsmm_conv_desc_.pad_h_out = 0;
 		    libxsmm_conv_desc_.pad_w_out = 0;
 		    libxsmm_conv_desc_.splits = group_;
@@ -720,8 +721,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
   float *input_padded;
   int input_padded_len;
-  if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV ||
-      this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV) {
+  if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
     // JSP: pad boundaries with zeros to avoid checking boundary conditions
 
 	  int height = conv_input_shape_.cpu_data()[1];
@@ -757,6 +757,43 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
       if (tid == 0) padding_time += omp_get_wtime();
 	  }
+  }
+  else if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV) {
+    // JSP: pad boundaries with zeros to avoid checking boundary conditions
+
+    int height = conv_input_shape_.cpu_data()[1];
+    int width = conv_input_shape_.cpu_data()[2];
+    int pad_h = pad_.cpu_data()[0];
+    int pad_w = pad_.cpu_data()[1];
+
+    input_padded_len = conv_in_channels_ * (height + 2*pad_h) * (width + 2*pad_w);
+    if (pad_h == 0 && pad_w == 0) {
+      input_padded = (float *)input;
+    }
+    else {
+      if (tid == 0) padding_time -= omp_get_wtime();
+
+      input_padded = input_padded_ + input_padded_len*gid;
+
+      int c_per_thread = (conv_in_channels_ + nthreads_per_group - 1)/nthreads_per_group;
+      int cbegin = std::min(c_per_thread*tid_in_group, conv_in_channels_);
+      int cend = std::min(cbegin + c_per_thread, conv_in_channels_);
+
+      {
+        for (int in_channel = cbegin; in_channel < cend; ++in_channel) {
+          for (int input_row = 0; input_row < height; ++input_row) {
+            memcpy(
+                input_padded + (in_channel * (height + 2*pad_h) + input_row + pad_h) * (width + 2*pad_w) + pad_w,
+                input + (in_channel * height + input_row) * width,
+                sizeof(float) * width);
+          }
+        }
+      }
+
+      if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
+
+      if (tid == 0) padding_time += omp_get_wtime();
+    }
   }
   else if (!is_1x1_ ||  is_concatenating_weights_features_) {
     if (tid == 0) im2col_time -= omp_get_wtime();
