@@ -135,6 +135,9 @@ void ConvolutionReLUPoolLRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& 
      product_layer_.reset(new EltwiseLayer<Dtype>(product_param));
      product_layer_->SetUp(product_bottom_vec_, top);
    }
+   if (this->layer_param_.relu_param().negative_slope() != 0) {
+     LOG(FATAL) << "ConvolutionReLUPoolLayer only supports negative_slope == 0";
+   }
 }
 
 template <typename Dtype>
@@ -253,7 +256,6 @@ void ConvolutionReLUPoolLRNLayer<float>::Forward_cpu(const vector<Blob<float>*>&
   }
 
   float negative_slope = this->layer_param_.relu_param().negative_slope();
-  assert(negative_slope == 0);
 
   float* pool_top = pool_top_[0]->mutable_cpu_data();
   int* mask = NULL;  // suppress warnings about uninitalized variables
