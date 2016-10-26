@@ -83,14 +83,8 @@ layer {
   }
 }
 layer {
-  name: "relu1"
-  type: "ReLU"
-  bottom: "conv1"
-  top: "conv1"
-}
-layer {
   name: "pool1"
-  type: "Pooling"
+  type: "ReLUPooling"
   bottom: "conv1"
   top: "pool1"
   pooling_param {
