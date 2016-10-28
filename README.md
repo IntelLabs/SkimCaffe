@@ -1,51 +1,12 @@
-# Caffe
-
-[![Build Status](https://travis-ci.org/BVLC/caffe.svg?branch=master)](https://travis-ci.org/BVLC/caffe)
-[![License](https://img.shields.io/badge/license-BSD-blue.svg)](LICENSE)
-
-Caffe is a deep learning framework made with expression, speed, and modularity in mind.
-It is developed by the Berkeley Vision and Learning Center ([BVLC](http://bvlc.eecs.berkeley.edu)) and community contributors.
-
-Check out the [project site](http://caffe.berkeleyvision.org) for all the details like
-
-- [DIY Deep Learning for Vision with Caffe](https://docs.google.com/presentation/d/1UeKXVgRvvxg9OUdh_UiC5G71UMscNPlvArsWER41PsU/edit#slide=id.p)
-- [Tutorial Documentation](http://caffe.berkeleyvision.org/tutorial/)
-- [BVLC reference models](http://caffe.berkeleyvision.org/model_zoo.html) and the [community model zoo](https://github.com/BVLC/caffe/wiki/Model-Zoo)
-- [Installation instructions](http://caffe.berkeleyvision.org/installation.html)
-
-and step-by-step examples.
-
-[![Join the chat at https://gitter.im/BVLC/caffe](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/BVLC/caffe?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-
-Please join the [caffe-users group](https://groups.google.com/forum/#!forum/caffe-users) or [gitter chat](https://gitter.im/BVLC/caffe) to ask questions and talk about methods and models.
-Framework development discussions and thorough bug reports are collected on [Issues](https://github.com/BVLC/caffe/issues).
-
-Happy brewing!
-
-## License and Citation
-
-Caffe is released under the [BSD 2-Clause license](https://github.com/BVLC/caffe/blob/master/LICENSE).
-The BVLC reference models are released for unrestricted use.
-
-Please cite Caffe in your publications if it helps your research:
-
-    @article{jia2014caffe,
-      Author = {Jia, Yangqing and Shelhamer, Evan and Donahue, Jeff and Karayev, Sergey and Long, Jonathan and Girshick, Ross and Guadarrama, Sergio and Darrell, Trevor},
-      Journal = {arXiv preprint arXiv:1408.5093},
-      Title = {Caffe: Convolutional Architecture for Fast Feature Embedding},
-      Year = {2014}
-    }
-
 ## SkimCaffe Specific Description
 
-SkimCaffe has been only tested for bvlc_reference_caffenet and there are a
-couple of places where things are hard-coded for 3x3 and 5x5 convolutions
-of bvlc_reference_caffenet .
-Other networks like GoogLeNet will be soon supported.
-If you can share .prototxt of the network you want to test, we can try our best
-to support it as well.
-Eventually, our sparse CNN implementation will be general enough to handle all
-kinds of networks.
+SkimCaffe has been only tested with bvlc_reference_caffenet bvlc_googlenet, and
+there could be places where things do not work if you use other networks.
+Please let us know if you encounter such issues and share .prototxt of the
+network you are using.
+We will try our best to support it as well.
+Eventually, our sparse CNN implementation should be general enough to handle
+all kinds of networks.
 
 We assume you have a recent Intel compiler and MKL installed.
 Tested environments: (Intel compiler version 15.0.3.187 and boost 1.59.0)
@@ -110,3 +71,41 @@ I1005 14:22:20.571291 68219 caffe.cpp:317] conv5 K-cycles-per-file 64.486 mFlops
 I1005 14:22:20.571300 68219 caffe.cpp:317] fc6 K-cycles-per-file 59.945 mFlops-per-file 75.4975 GF/s 2764.4
 I1005 14:22:20.571306 68219 caffe.cpp:317] fc7 K-cycles-per-file 31.91 mFlops-per-file 33.5544 GF/s 2308.03
 ```
+
+# Caffe
+
+[![Build Status](https://travis-ci.org/BVLC/caffe.svg?branch=master)](https://travis-ci.org/BVLC/caffe)
+[![License](https://img.shields.io/badge/license-BSD-blue.svg)](LICENSE)
+
+Caffe is a deep learning framework made with expression, speed, and modularity in mind.
+It is developed by the Berkeley Vision and Learning Center ([BVLC](http://bvlc.eecs.berkeley.edu)) and community contributors.
+
+Check out the [project site](http://caffe.berkeleyvision.org) for all the details like
+
+- [DIY Deep Learning for Vision with Caffe](https://docs.google.com/presentation/d/1UeKXVgRvvxg9OUdh_UiC5G71UMscNPlvArsWER41PsU/edit#slide=id.p)
+- [Tutorial Documentation](http://caffe.berkeleyvision.org/tutorial/)
+- [BVLC reference models](http://caffe.berkeleyvision.org/model_zoo.html) and the [community model zoo](https://github.com/BVLC/caffe/wiki/Model-Zoo)
+- [Installation instructions](http://caffe.berkeleyvision.org/installation.html)
+
+and step-by-step examples.
+
+[![Join the chat at https://gitter.im/BVLC/caffe](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/BVLC/caffe?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
+Please join the [caffe-users group](https://groups.google.com/forum/#!forum/caffe-users) or [gitter chat](https://gitter.im/BVLC/caffe) to ask questions and talk about methods and models.
+Framework development discussions and thorough bug reports are collected on [Issues](https://github.com/BVLC/caffe/issues).
+
+Happy brewing!
+
+## License and Citation
+
+Caffe is released under the [BSD 2-Clause license](https://github.com/BVLC/caffe/blob/master/LICENSE).
+The BVLC reference models are released for unrestricted use.
+
+Please cite Caffe in your publications if it helps your research:
+
+    @article{jia2014caffe,
+      Author = {Jia, Yangqing and Shelhamer, Evan and Donahue, Jeff and Karayev, Sergey and Long, Jonathan and Girshick, Ross and Guadarrama, Sergio and Darrell, Trevor},
+      Journal = {arXiv preprint arXiv:1408.5093},
+      Title = {Caffe: Convolutional Architecture for Fast Feature Embedding},
+      Year = {2014}
+    }
