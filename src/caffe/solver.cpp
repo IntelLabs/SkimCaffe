@@ -73,6 +73,7 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   prune_threshold_ = param_.prune_threshold();
   measure_threshold_ = param_.measure_threshold();
   LOG(INFO) << "prune_threshold = " << prune_threshold_ << " measure_threshold = " << measure_threshold_;
+  LOG(INFO) << "max_threshold_factor = " << param_.max_threshold_factor();
 }
 
 template <typename Dtype>
