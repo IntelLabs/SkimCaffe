@@ -195,14 +195,14 @@ struct WinogradParameters<5>
 
   static const double *getG() {
     static const double G[M*N] = {
-             1,       0,       0,       0,        0,
-      -2.f/ 9., -2./ 9., -2./ 9., -2./ 9., -2./  9.,
-      -2.f/ 9.,  2./ 9., -2./ 9.,  2./ 9., -2./  9.,
-       1.f/90.,  1./45.,  2./45.,  4./45.,  8./ 45.,
-       1.f/90., -1./45.,  2./45., -4./45.,  8./ 45.,
-       4.f/45.,  2./45.,  1./45.,  1./90.,  1./180.,
-       4.f/45., -2./45.,  1./45., -1./90.,  1./180.,
-             0,       0,       0,       0,        1,
+            1,       0,       0,       0,        0,
+      -2./ 9., -2./ 9., -2./ 9., -2./ 9., -2./  9.,
+      -2./ 9.,  2./ 9., -2./ 9.,  2./ 9., -2./  9.,
+       1./90.,  1./45.,  2./45.,  4./45.,  8./ 45.,
+       1./90., -1./45.,  2./45., -4./45.,  8./ 45.,
+       4./45.,  2./45.,  1./45.,  1./90.,  1./180.,
+       4./45., -2./45.,  1./45., -1./90.,  1./180.,
+            0,       0,       0,       0,        1,
     };
     return G;
   }
@@ -455,69 +455,48 @@ public :
    * @param weight_input weights in time domain that is going to be updated according
    *                     to sparsity pattern in mask
    * @param mask 0 element means it's thresholded
+   * @param impose_factor 0 means we're not imposing sparsity at all.
    */
-  void imposeSparsity(Dtype *weight_inout, const Dtype *mask) {
+  void imposeSparsity(Dtype *weight_inout, const Dtype *mask, double impose_factor) {
     const double *A = WinogradGKronG<double>::getInstance(K)->get()->cpu_data();
 
-    double A_temp[(M*M)*(N*N)];
+    // [impose_factor*A_I; eye]
+    double A_temp[(M*M + N*N)*(N*N)];
     int zero_cnt = 0;
     for (int i = 0; i < M*M; ++i) {
       if (mask[i] == 0) {
         for (int j = 0; j < N*N; ++j) {
-          A_temp[zero_cnt*N*N + j] = A[i*N*N + j];
+          A_temp[zero_cnt*N*N + j] = impose_factor*A[i*N*N + j];
         }
         ++zero_cnt;
       }
     }
-
-    int rank = std::min(zero_cnt, N*N);
-
-    double S[rank];
-    double U[(M*M)*rank], VT[(N*N)*(N*N)];
-    double superb[N*N - 1];
-
-    MKL_INT info = LAPACKE_dgesvd(
-      LAPACK_ROW_MAJOR, 'S', 'S',
-      zero_cnt, N*N,
-      A_temp, N*N,
-      S,
-      U, rank,
-      VT, N*N,
-      superb);
-    if (info > 0) {
-      LOG(FATAL) << "SVD failed to converge with return value " << info;
-    }
-
-//    fprintf(stderr, "eigenvalues: "); print_matrix(S, 1, rank);
-    int rank_truncated = rank;
-    for (int k = 0; k < rank; ++k) {
-      if (S[k] < 1e-5) {
-        rank_truncated = k;
-        break;
-      }
-    }
-//    fprintf(stderr, "VT\n"); print_matrix(VT, rank, N*N);
-
-    Dtype weight_temp[N*N];
-    memcpy(weight_temp, weight_inout, N*N*sizeof(Dtype));
-
-//    double V_times_VT[(N*N)*(N*N)];
-//    fprintf(stderr, "V_times_VT\n");
+    memset(A_temp + zero_cnt*N*N, 0, sizeof(A_temp[0])*(N*N)*(N*N));
     for (int i = 0; i < N*N; ++i) {
-      double acc = weight_temp[i];
-      for (int j = 0; j < N*N; ++j) {
-        double sum = 0;
-        for (int k = 0; k < rank_truncated; ++k) {
-          sum += VT[k*N*N + i]*VT[k*N*N + j];
-        }
-//        fprintf(stderr, "%g ", sum);
-        acc -= sum*weight_temp[j];
-      }
-//      fprintf(stderr, "\n");
-      weight_inout[i] = acc;
+      A_temp[(zero_cnt + i)*(N*N) + i] = 1;
+    }
+
+    // [zeros; W_t]
+    double b[zero_cnt + (N*N)];
+    memset(b, 0, sizeof(b[0])*zero_cnt);
+    for (int i = 0; i < N*N; ++i) {
+      b[zero_cnt + i] = weight_inout[i];
+    }
+
+    lapack_int info = LAPACKE_dgels(
+        LAPACK_ROW_MAJOR, 'N',
+        zero_cnt + N*N, N*N,
+        1,
+        A_temp, N*N,
+        b, 1);
+    if (info != 0) {
+      LOG(FATAL) << "dgels failed with return value " << info;
+    }
+
+    for (int i = 0; i < N*N; ++i) {
+      weight_inout[i] = b[i];
     }
   }
-
 }; // WinogradGKronG
 
 #endif

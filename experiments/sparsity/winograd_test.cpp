@@ -450,7 +450,7 @@ int main()
     }
 
     memcpy(weight.mutable_cpu_data(), weight_cpu, sizeof(weight_cpu));
-    imposeSparsityGPU(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 1, A->get()->gpu_data(), A->M, A->N);
+    caffe::caffe_gpu_impose_sparsity(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 1, A->get()->gpu_data(), A->M, A->N, 1);
     print_matrix(weight.cpu_data(), A->N, A->N);
 
     for (int i = 0; i < shape[0]; ++i) {
@@ -460,7 +460,7 @@ int main()
       mask.mutable_cpu_data()[indices[i] - 1] = 0;
     }
     memcpy(weight.mutable_cpu_data(), weight_cpu, sizeof(weight_cpu));
-    imposeSparsityGPU(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 100, A->get()->gpu_data(), A->M, A->N);
+    caffe::caffe_gpu_impose_sparsity(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 100, A->get()->gpu_data(), A->M, A->N, 1);
     print_matrix(weight.cpu_data(), A->N, A->N);
   }
 
