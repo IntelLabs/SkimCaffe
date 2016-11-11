@@ -171,7 +171,7 @@ struct WinogradParameters
 template<>
 struct WinogradParameters<3>
 {
-  static const int M = 6;
+  static const int M = 3 + 4 - 1;
   static const int N = 3;
 
   static const double *getG() {
@@ -185,13 +185,39 @@ struct WinogradParameters<3>
     };
     return G;
   }
+
+  static const double *getA() {
+    static const double A[M*(M - N + 1)] = {
+        1,  0, 0,  0,
+        1,  1, 1,  1,
+        1, -1, 1, -1,
+        1,  2, 4,  8,
+        1, -2, 4, -8,
+        0,  0, 0,  1,
+    };
+    return A;
+  }
+
+  static const double *getB() {
+    static const double B[M*M] = {
+         4,  0,  0,  0,  0,  0,
+         0, -4,  4, -2,  2,  4,
+        -5, -4, -4, -1, -1,  0,
+         0,  1, -1,  2, -2, -5,
+         1,  1,  1,  1,  1,  0,
+         0,  0,  0,  0,  0,  1,
+    };
+    return B;
+  };
 };
 
 template<>
 struct WinogradParameters<5>
 {
-  static const int M = 8;
+  static const int M = 5 + 4 - 1;
   static const int N = 5;
+
+  // from https://github.com/Maratyszcza/NNPACK/issues/12
 
   static const double *getG() {
     static const double G[M*N] = {
@@ -206,6 +232,176 @@ struct WinogradParameters<5>
     };
     return G;
   }
+
+  static const double *getA() {
+    static const double A[M*(M - N + 1)] = {
+        1,  0, 0,  0,
+        1,  1, 1,  1,
+        1, -1, 1, -1,
+        1,  2, 4,  8,
+        1, -2, 4, -8,
+        8,  4, 2,  1,
+        8, -4, 2, -1,
+        0,  0, 0,  1
+    };
+    return A;
+  }
+
+  static const double *getB() {
+    static const double B[M*M] = {
+             1,      0,      0,     0,     0,     0,     0,      0,
+             0,      1,     -1,  1./2, -1./2,     2,    -2,     -1,
+        -21./4,      1,      1,  1./4,  1./4,     4,     4,      0,
+             0, -17./4,  17./4, -5./2,  5./2, -5./2,  5./2,  21./4,
+         21./4, -17./4, -17./4, -5./4, -5./4,    -5,    -5,      0,
+             0,      1,     -1,     2,    -2,  1./2, -1./2, -21./4,
+            -1,      1,      1,     1,     1,     1,     1,      0,
+             0,      0,      0,     0,     0,     0,     0,      1,
+    };
+    return B;
+  }
+};
+
+template<typename Dtype>
+class WinogradAKronA
+{
+private :
+  const double *A;
+
+  WinogradAKronA(int K) : K(K), N(K) {
+    if (3 == K) {
+      M = WinogradParameters<3>::M;
+      A = WinogradParameters<3>::getA();
+    }
+    else if (5 == K) {
+      M = WinogradParameters<5>::M;
+      A = WinogradParameters<5>::getA();
+    }
+    else {
+      assert(false);
+      M = 0;
+      A = NULL;
+    }
+  }
+
+  boost::shared_ptr<caffe::Blob<Dtype> > AKronA;
+  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
+
+public :
+  const int K;
+  int M, N;
+
+  static WinogradAKronA *getInstance(int K) {
+    static WinogradAKronA *instances[16] = { NULL };
+    if (3 == K) {
+      if (instances[3] == NULL) {
+        instances[3] = new WinogradAKronA(3);
+      }
+      return instances[3];
+    }
+    else if (5 == K) {
+      if (instances[5] == NULL) {
+        instances[5] = new WinogradAKronA(5);
+      }
+      return instances[5];
+    }
+    else {
+      assert(false);
+      return NULL;
+    }
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > get() {
+    if (NULL == AKronA.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      shape.push_back((M - N + 1)*(M - N + 1));
+      AKronA = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+
+      kronecker_product(AKronA->mutable_cpu_data(), A, A, M, M - N + 1, M, M - N + 1);
+    }
+
+    return AKronA;
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
+    if (NULL == transpose.get()) {
+      transpose = get_transpose_of(get()->cpu_data(), M*M, (M - N + 1)*(M - N + 1));
+    }
+
+    return transpose;
+  }
+};
+
+template<typename Dtype>
+class WinogradBKronB
+{
+private :
+  const double *B;
+
+  WinogradBKronB(int K) : K(K), N(K) {
+    if (3 == K) {
+      M = WinogradParameters<3>::M;
+      B = WinogradParameters<3>::getB();
+    }
+    else if (5 == K) {
+      M = WinogradParameters<5>::M;
+      B = WinogradParameters<5>::getB();
+    }
+    else {
+      assert(false);
+      M = 0;
+      B = NULL;
+    }
+  }
+
+  boost::shared_ptr<caffe::Blob<Dtype> > BKronB;
+  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
+
+public :
+  const int K;
+  int M, N;
+
+  static WinogradBKronB *getInstance(int K) {
+    static WinogradBKronB *instances[16] = { NULL };
+    if (3 == K) {
+      if (instances[3] == NULL) {
+        instances[3] = new WinogradBKronB(3);
+      }
+      return instances[3];
+    }
+    else if (5 == K) {
+      if (instances[5] == NULL) {
+        instances[5] = new WinogradBKronB(5);
+      }
+      return instances[5];
+    }
+    else {
+      assert(false);
+      return NULL;
+    }
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > get() {
+    if (NULL == BKronB.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      shape.push_back(M*M);
+      BKronB = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+
+      kronecker_product(BKronB->mutable_cpu_data(), B, B, M, M, M, M);
+    }
+
+    return BKronB;
+  }
+
+  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
+    if (NULL == transpose.get()) {
+      transpose = get_transpose_of(get()->cpu_data(), M*M, M*M);
+    }
+
+    return transpose;
+  }
 };
 
 template<typename Dtype>
@@ -214,21 +410,18 @@ class WinogradGKronG
 private :
   const double *G;
 
-  WinogradGKronG(int K) : K(K) {
+  WinogradGKronG(int K) : K(K), N(K) {
     if (3 == K) {
       M = WinogradParameters<3>::M;
-      N = WinogradParameters<3>::N;
       G = WinogradParameters<3>::getG();
     }
     else if (5 == K) {
       M = WinogradParameters<5>::M;
-      N = WinogradParameters<5>::N;
       G = WinogradParameters<5>::getG();
     }
     else {
       assert(false);
       M = 0;
-      N = 0;
       G = NULL;
     }
   }
