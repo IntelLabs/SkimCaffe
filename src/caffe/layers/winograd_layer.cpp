@@ -42,7 +42,7 @@ void WinogradLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   // temp1_, temp2_, and winograd_ are stored in transposed form
   vector<int> shape;
   shape.push_back(tile_h_in*tile_w_in);
-  shape.push_back(this->conv_in_channels_/this->group_);
+  shape.push_back(this->conv_in_channels_);
   shape.push_back(ntiles_h*ntiles_w);
   temp1_.Reshape(shape);
 
@@ -196,13 +196,18 @@ void WinogradLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
       caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans, tile_h_in*tile_w_in, (this->conv_in_channels_/this->group_)*this->conv_out_channels_, kernel_h*kernel_w,
           (Dtype)1, GKronG->get()->cpu_data(), weight,
           (Dtype)0, winograd_weight_.mutable_cpu_data());
-      // wingrad_weight_ has (tile_h_in*tile_w_in) x (conv_out_channels) x (conv_in_channels) dimension
+      // wingrad_weight_ has (tile_h_in*tile_w_in) x (conv_out_channels) x (conv_in_channels/group) dimension
 
       // Convolution in Winograd domain
       for (int j = 0; j < tile_h_in*tile_w_in; ++j) {
-        caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, this->conv_out_channels_, ntiles_h*ntiles_w, this->conv_in_channels_/this->group_,
-            (Dtype)1, winograd_weight_.cpu_data() + j*this->conv_out_channels_*(this->conv_in_channels_/this->group_), temp1_.cpu_data() + j*(this->conv_in_channels_/this->group_)*ntiles_h*ntiles_w,
-            (Dtype)0, temp2_.mutable_cpu_data() + j*this->conv_out_channels_*ntiles_h*ntiles_w);
+        for (int g = 0; g < this->group_; ++g) {
+          caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans,
+              this->conv_out_channels_/this->group_, ntiles_h*ntiles_w, this->conv_in_channels_/this->group_,
+              (Dtype)1,
+              winograd_weight_.cpu_data() + (j*this->group_ + g)*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_),
+              temp1_.cpu_data() + (j*this->group_ + g)*(this->conv_in_channels_/this->group_)*ntiles_h*ntiles_w,
+              (Dtype)0, temp2_.mutable_cpu_data() + (j*this->group_ + g)*(this->conv_out_channels_/this->group_)*ntiles_h*ntiles_w);
+        }
       }
       // temp2_ has (tile_h_in*tile_w_in) x (conv_out_channels) x (ntiles_h*ntiles_w)
 
