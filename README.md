@@ -32,6 +32,7 @@ make
 ```
 bzip2 -d models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel.bz2
 env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv.prototxt -weights models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel -iterations 3 # assume you have 16 cores. Adjust OMP_NUM_THREADS variable accordingly for your number of cores
+env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe.bin test -model models/bvlc_googlenet/test_direct_sconv.prototxt -weights models/bvlc_googlenet/caffenet_train_iter_273309.caffemodel -iterations 3 # test with GoogLeNet
 ```
 
 Example output from Intel(R) Xeon(R) CPU E5-2699 v4 @ 2.20GHz
