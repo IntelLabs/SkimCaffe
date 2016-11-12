@@ -66,8 +66,7 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
 
   virtual inline const char* type() const { return "Winograd"; }
 
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+  virtual void WeightAlign();
 
  protected:
   virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
@@ -89,7 +88,7 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   void winograd_output_im2col_cpu(const Dtype *col_buff, Dtype *data);
   void winograd_input_col2im_cpu(const Dtype *col_buff, Dtype *data);
 
-  Blob<Dtype> temp_, winograd_weight_;
+  Blob<Dtype> temp1_, temp2_, winograd_weight_;
 };
 
 }  // namespace caffe
