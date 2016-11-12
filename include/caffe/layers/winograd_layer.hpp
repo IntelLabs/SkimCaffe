@@ -81,10 +81,15 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   virtual inline bool reverse_dimensions() { return false; }
   virtual void compute_output_shape();
 
-  void winograd_im2col_cpu(const Dtype *data, Dtype *col_buff);
-  void winograd_col2im_cpu(const Dtype *col_buff, Dtype *data);
+  // used in forward pass
+  void winograd_input_im2col_cpu(const Dtype *data, Dtype *col_buff);
+  void winograd_output_col2im_cpu(const Dtype *col_buff, Dtype *data);
 
-  Blob<Dtype> temp1_, temp2_, output_temp_, winograd_weight_;
+  // used in backward pass
+  void winograd_output_im2col_cpu(const Dtype *col_buff, Dtype *data);
+  void winograd_input_col2im_cpu(const Dtype *col_buff, Dtype *data);
+
+  Blob<Dtype> temp_, winograd_weight_;
 };
 
 }  // namespace caffe
