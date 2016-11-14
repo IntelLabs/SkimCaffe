@@ -97,6 +97,8 @@ class Solver {
   static Dtype getPruneThreshold() { return prune_threshold_; }
   static Dtype getMeasureThreshold() { return measure_threshold_; }
 
+  virtual void checkIfLearnableParameterResized() { }
+
  protected:
   // Make and apply the update value for the current iteration.
   virtual void ApplyUpdate() = 0;

@@ -23,6 +23,8 @@ class SGDSolver : public Solver<Dtype> {
 
   const vector<shared_ptr<Blob<Dtype> > >& history() { return history_; }
 
+  virtual void checkIfLearnableParameterResized();
+
  protected:
   void PreSolve();
   Dtype GetLearningRate();

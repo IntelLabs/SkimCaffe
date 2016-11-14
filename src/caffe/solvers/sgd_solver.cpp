@@ -93,6 +93,23 @@ void SGDSolver<Dtype>::PreSolve() {
 }
 
 template <typename Dtype>
+void SGDSolver<Dtype>::checkIfLearnableParameterResized() {
+  const vector<Blob<Dtype>*>& net_params = this->net_->learnable_params();
+  for (int i = 0; i < net_params.size(); ++i) {
+    const vector<int>& shape = net_params[i]->shape();
+    if (history_[i]->shape() != shape) {
+      history_[i]->Reshape(shape);
+    }
+    if (update_[i]->shape() != shape) {
+      update_[i]->Reshape(shape);
+    }
+    if (temp_[i]->shape() != shape) {
+      temp_[i]->Reshape(shape);
+    }
+  }
+}
+
+template <typename Dtype>
 void SGDSolver<Dtype>::ClipGradients() {
   const Dtype clip_gradients = this->param_.clip_gradients();
   if (clip_gradients < 0) { return; }
@@ -147,6 +164,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 
   PrintWinogradFiberSliceSparsity();
 
+#if 0
 	sparsity_msg_stream.str("");
 	sparsity_msg_stream << "     Column Sparsity %: \n";
 	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
@@ -185,6 +203,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
     }
 	}
 	LOG(INFO) << sparsity_msg_stream.str();
+#endif
 
   sparsity_msg_stream.str("");
   sparsity_msg_stream << "        OC-fiber Sparsity %: \n";
@@ -711,6 +730,22 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
                   net_params[param_id]->cpu_data(),
                   net_params[param_id]->cpu_data());
           if (isnan(regularization_term)) {
+            ostringstream str;
+            str << "data:sign:diff";
+            for (int i = 0; i < net_params[param_id]->count(); ++i) {
+              str << " " << net_params[param_id]->cpu_data()[i] << ":" << temp_[param_id]->cpu_data()[i] << ":" << net_params[param_id]->cpu_diff()[i];
+            }
+            LOG(INFO) << str.str();
+
+            str.str("");
+            str << "nan";
+            for (int i = 0; i < net_params[param_id]->count(); ++i) {
+              if(isnan(net_params[param_id]->cpu_data()[i])) {
+                str << " " << i << ":" << net_params[param_id]->cpu_data()[i] << ":" << temp_[param_id]->cpu_data()[i] << ":" << net_params[param_id]->cpu_diff()[i];
+              }
+            }
+            LOG(INFO) << str.str();
+
             LOG(FATAL) << "nan at param " << param_id;
           }
           regularization_term *= local_decay/(Dtype)2.0;
@@ -725,6 +760,22 @@ Dtype SGDSolver<Dtype>::Regularize(int param_id) {
           //calcuate the l1 regularization term
           regularization_term = caffe_cpu_asum(net_params[param_id]->count(),net_params[param_id]->cpu_data());
           if (isnan(regularization_term)) {
+            ostringstream str;
+            str << "data:sign:diff";
+            for (int i = 0; i < net_params[param_id]->count(); ++i) {
+              str << " " << net_params[param_id]->cpu_data()[i] << ":" << temp_[param_id]->cpu_data()[i] << ":" << net_params[param_id]->cpu_diff()[i];
+            }
+            LOG(INFO) << str.str();
+
+            str.str("");
+            str << "nan";
+            for (int i = 0; i < net_params[param_id]->count(); ++i) {
+              if(isnan(net_params[param_id]->cpu_data()[i])) {
+                str << " " << i << ":" << net_params[param_id]->cpu_data()[i] << ":" << temp_[param_id]->cpu_data()[i] << ":" << net_params[param_id]->cpu_diff()[i];
+              }
+            }
+            LOG(INFO) << str.str();
+
             LOG(FATAL) << "nan at param " << param_id;
           }
           regularization_term *= local_decay;
@@ -859,7 +910,7 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
 
   Blob<Dtype> *param = net_params[param_id];
 
-  if (param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+  if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
     int N = param->shape()[0];
     int C = param->shape()[1];
     int K = param->shape()[2];
@@ -936,7 +987,7 @@ void SGDSolver<Dtype>::PrintWinogradFiberSliceSparsity() {
   sparsity_msg_stream << "     Winograd fiber/slice sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
     Blob<Dtype> *param = this->net_->learnable_params()[param_id]; 
-    if (param->num_axes() == 4 && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+    if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
       int N = param->shape()[0];
       int C = param->shape()[1];
       int K = param->shape()[2];
