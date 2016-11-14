@@ -28,7 +28,6 @@ void ConvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   for (int i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
     Dtype* top_data = top[i]->mutable_cpu_data();
-#pragma omp parallel for
     for (int n = 0; n < this->num_; ++n) { // JSP: this->num_ is batch size
       this->forward_cpu_gemm(bottom_data + n * this->bottom_dim_, weight,
           top_data + n * this->top_dim_, n);
@@ -60,13 +59,61 @@ void ConvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
       for (int n = 0; n < this->num_; ++n) {
         // gradient w.r.t. weight. Note that we will accumulate diffs.
         if (this->param_propagate_down_[0]) {
+          for (int i = 0; i < this->bottom_dim_; ++i) {
+            if (isnan(bottom_data[n*this->bottom_dim_ + i])) {
+              ostringstream str;
+              str << "nan at bottom_data[" << n << ", " << i << "]";
+              LOG(FATAL) << str.str();
+            }
+          }
+          for (int i = 0; i < this->top_dim_; ++i) {
+            if (isnan(top_diff[n*this->top_dim_ + i])) {
+              ostringstream str;
+              str << "nan at top_diff[" << n << ", " << i << "]";
+              LOG(FATAL) << str.str();
+            }
+          }
+
           this->weight_cpu_gemm(bottom_data + n * this->bottom_dim_,
               top_diff + n * this->top_dim_, weight_diff);
+          for (int i = 0; i < this->blobs_[0]->count(); ++i) {
+            if (isnan(weight_diff[i])) {
+              ostringstream str;
+              str << "nan at weight_diff[" << i << "]";
+              LOG(FATAL) << str.str();
+            }
+          }
+
+          if (this->layer_param().name() == "conv1") {
+            fprintf(stderr, "weight_diff[%d]\n", n);
+            for (int m = 0; m < this->conv_out_channels_; ++m) {
+              for (int c = 0; c < this->conv_in_channels_/this->group_; ++c) {
+                for (int i = 0; i < kernel_h*kernel_w; ++i) {
+                  fprintf(stderr, "%g ", weight_diff[(m*(this->conv_in_channels_/this->group_) + c)*kernel_h*kernel_w + i]);
+                }
+              }
+              fprintf(stderr, "\n");
+            }
+          }
         }
         // gradient w.r.t. bottom data, if necessary.
         if (propagate_down[i]) {
+          for (int i = 0; i < this->blobs_[0]->count(); ++i) {
+            if (isnan(weight[i])) {
+              ostringstream str;
+              str << "nan at weight[" << i << "]";
+              LOG(FATAL) << str.str();
+            }
+          }
           this->backward_cpu_gemm(top_diff + n * this->top_dim_, weight,
               bottom_diff + n * this->bottom_dim_);
+          for (int i = 0; i < this->bottom_dim_; ++i) {
+            if (isnan(bottom_diff[n*this->bottom_dim_ + i])) {
+              ostringstream str;
+              str << "nan at bottom_diff[" << n << ", " << i << "]";
+              LOG(FATAL) << str.str();
+            }
+          }
         }
       }
     }
