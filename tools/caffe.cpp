@@ -129,6 +129,7 @@ void CopyLayers(caffe::Solver<float>* solver, const std::string& model_list) {
   for (int i = 0; i < model_names.size(); ++i) {
     LOG(INFO) << "Finetuning from " << model_names[i];
     solver->net()->CopyTrainedLayersFrom(model_names[i]);
+    solver->checkIfLearnableParameterResized();
     for (int j = 0; j < solver->test_nets().size(); ++j) {
       solver->test_nets()[j]->CopyTrainedLayersFrom(model_names[i]);
     }
