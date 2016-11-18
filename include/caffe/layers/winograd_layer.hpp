@@ -89,6 +89,11 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   void winograd_input_col2im_cpu(const Dtype *col_buff, Dtype *data);
 
   Blob<Dtype> temp1_, temp2_, winograd_weight_;
+
+  // The following variables are initialized in WeightAlign
+  int tile_h_in_, tile_w_in_; /* input tile size */
+  int tile_h_out_, tile_w_out_; /* output tile size */
+  int ntiles_h_, ntiles_w_; /* number of tiles */
 };
 
 }  // namespace caffe
