@@ -505,10 +505,8 @@ void BaseConvolutionLayer<Dtype>::forward_cpu_gemm(const Dtype* input,
 		  const Dtype *values = nz_weight_values_.cpu_data()+ weight_offset_ * g;
 		  const int *colidx = nz_weight_indices_.cpu_data()+ weight_offset_ * g;
 
-		  const int output_h = (height + 2 * pad_h -
-				  (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
-		  const int output_w = (width + 2 * pad_w -
-				  (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
+		  const int output_h = this->output_shape_[0];
+		  const int output_w = this->output_shape_[1];
 		  assert(output_h*output_w == N);
 	      const Dtype *in_temp = input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w);
 	      if (dilation_h != 1 || dilation_w != 1) {
