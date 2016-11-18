@@ -1,6 +1,7 @@
 #include <vector>
 
 #include "caffe/layers/conv_layer.hpp"
+#include "caffe/util/winograd.hpp"
 
 namespace caffe {
 
@@ -84,7 +85,10 @@ void ConvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
             }
           }
 
-          if (this->layer_param().name() == "conv1") {
+          if (false/*this->layer_param().name() == "conv1" && n == this->num_ - 1*/) {
+		        int kernel_h = this->kernel_shape_.cpu_data()[0];
+		        int kernel_w = this->kernel_shape_.cpu_data()[1];
+
             fprintf(stderr, "weight_diff[%d]\n", n);
             for (int m = 0; m < this->conv_out_channels_; ++m) {
               for (int c = 0; c < this->conv_in_channels_/this->group_; ++c) {
@@ -94,6 +98,36 @@ void ConvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
               }
               fprintf(stderr, "\n");
             }
+
+            int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
+            int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
+            int dilation_h = this->dilation_.cpu_data()[0], dilation_w = this->dilation_.cpu_data()[1];
+            WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
+
+            int tile_h_in_ = GKronG->M;
+            int tile_w_in_ = GKronG->M;
+            int tile_h_out_ = tile_h_in_ - GKronG->N + 1, tile_w_out_ = tile_w_in_ - GKronG->N + 1;
+
+            int ntiles_h_ = (height + kernel_h - 1 + tile_h_out_ - 1)/tile_h_out_;
+            int ntiles_w_ = (width + kernel_w - 1 + tile_w_out_ - 1)/tile_w_out_;
+
+            Dtype *weight_diff_winograd = new Dtype[this->conv_out_channels_*this->conv_in_channels_*tile_h_in_*tile_w_in_];
+            caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans,
+                tile_h_in_*tile_w_in_, this->conv_in_channels_*this->conv_out_channels_, kernel_h*kernel_w,
+                (Dtype)1, GKronG->get()->cpu_data(), weight_diff,
+                (Dtype)0, weight_diff_winograd);
+
+            fprintf(stderr, "weight_diff_winograd[%d]\n", n);
+            for (int n = 0; n < this->conv_out_channels_; ++n) {
+              for (int c = 0; c < this->conv_in_channels_; ++c) {
+                for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
+                  fprintf(stderr, "%g ", weight_diff_winograd[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+                }
+              }
+              fprintf(stderr, "\n");
+            }
+
+            delete[] weight_diff_winograd;
           }
         }
         // gradient w.r.t. bottom data, if necessary.
