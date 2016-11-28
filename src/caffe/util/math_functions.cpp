@@ -83,6 +83,7 @@ void caffe_set(const int N, const Dtype alpha, Dtype* Y) {
 
 template void caffe_set<int>(const int N, const int alpha, int* Y);
 template void caffe_set<unsigned int>(const int N, const unsigned int alpha, unsigned int* Y);
+template void caffe_set<long>(const int N, const long alpha, long* Y);
 template void caffe_set<float>(const int N, const float alpha, float* Y);
 template void caffe_set<double>(const int N, const double alpha, double* Y);
 
@@ -119,6 +120,7 @@ void caffe_copy(const int N, const Dtype* X, Dtype* Y) {
 template void caffe_copy<int>(const int N, const int* X, int* Y);
 template void caffe_copy<unsigned int>(const int N, const unsigned int* X,
     unsigned int* Y);
+template void caffe_copy<long>(const int N, const long* X, long* Y);
 template void caffe_copy<float>(const int N, const float* X, float* Y);
 template void caffe_copy<double>(const int N, const double* X, double* Y);
 
@@ -650,6 +652,8 @@ template
 void caffe_cpu_all_zero_mask(const int M, const int N, const int *X, int* y);
 template
 void caffe_cpu_all_zero_mask(const int M, const int N, const unsigned int *X, unsigned int* y);
+template
+void caffe_cpu_all_zero_mask(const int M, const int N, const long *X, long* y);
 
 template<typename Dtype>
 Dtype caffe_cpu_fiber_sparsity(
