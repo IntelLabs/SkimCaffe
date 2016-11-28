@@ -240,6 +240,7 @@ class Blob {
   void Disconnect(DisconnectMode mode, Dtype thre, int group=1);
   inline void Connect(){ InitializeConnectivity(); }
   Dtype GetSparsity(Dtype threshold);
+  Dtype GetWinogradSparsity(Dtype threshold);
   void FromProto(const BlobProto& proto, bool reshape = true);
   void ToProto(BlobProto* proto, bool write_diff = false) const;
   void Snapshot(string filename = "", bool write_diff = false) const;
