@@ -402,7 +402,11 @@ void caffe_gpu_##name<double>(const int n, const double* x, double* y) { \
 }
 
 template <typename Dtype>
-void caffe_gpu_impose_sparsity(Dtype *weight_inout, Dtype *mask, double impose_factor, const double *A, int M, int N, int repeat);
+void caffe_gpu_impose_sparsity(
+  Dtype *weight, double *weight_temp, double **weight_temp_ptr,
+  const double *A, double *A_temp, double **A_temp_ptr,
+  Dtype *mask, double impose_factor,
+  int M, int N, int repeat);
 
 #endif  // !CPU_ONLY
 

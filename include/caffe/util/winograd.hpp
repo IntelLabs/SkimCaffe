@@ -285,7 +285,7 @@ private :
   }
 
   boost::shared_ptr<caffe::Blob<Dtype> > AKronA;
-  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
+  boost::shared_ptr<caffe::Blob<Dtype> > normOfRowsInv;
 
 public :
   const int K;
@@ -324,12 +324,21 @@ public :
     return AKronA;
   }
 
-  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
-    if (NULL == transpose.get()) {
-      transpose = get_transpose_of(get()->cpu_data(), M*M, (M - N + 1)*(M - N + 1));
+  const boost::shared_ptr<caffe::Blob<Dtype> > getNormRowsInv() {
+    if (NULL == normOfRowsInv.get()) {
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      normOfRowsInv = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+      Dtype *normOfRowsInv_data = normOfRowsInv->mutable_cpu_data();
+
+      const double *A_kron_A = WinogradAKronA<double>::getInstance(K)->get()->cpu_data();
+      for (int i = 0; i < M*M; ++i) {
+        normOfRowsInv_data[i] =
+            1./cblas_dnrm2((M - N + 1)*(M - N + 1), A_kron_A + i*(M - N + 1)*(M - N + 1), 1);
+      }
     }
 
-    return transpose;
+    return normOfRowsInv;
   }
 };
 
@@ -356,7 +365,6 @@ private :
   }
 
   boost::shared_ptr<caffe::Blob<Dtype> > BKronB;
-  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
 
 public :
   const int K;
@@ -394,14 +402,6 @@ public :
 
     return BKronB;
   }
-
-  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
-    if (NULL == transpose.get()) {
-      transpose = get_transpose_of(get()->cpu_data(), M*M, M*M);
-    }
-
-    return transpose;
-  }
 };
 
 template<typename Dtype>
@@ -427,12 +427,10 @@ private :
   }
 
   boost::shared_ptr<caffe::Blob<Dtype> > GKronG;
-  boost::shared_ptr<caffe::Blob<Dtype> > transpose;
-  boost::shared_ptr<caffe::Blob<Dtype> > transposeNormalizedWithInv;
+  boost::shared_ptr<caffe::Blob<Dtype> > normalizedWithInv;
   boost::shared_ptr<caffe::Blob<Dtype> > normOfRows;
 
-  boost::shared_ptr<Dtype> inv;
-  boost::shared_ptr<caffe::Blob<Dtype> > invTranspose;
+  boost::shared_ptr<caffe::Blob<Dtype> > inv;
   boost::shared_ptr<caffe::Blob<Dtype> > normOfInvCols;
 
 public :
@@ -472,53 +470,25 @@ public :
     return GKronG;
   }
 
-  const boost::shared_ptr<caffe::Blob<Dtype> > getTranspose() {
-    if (NULL == transpose.get()) {
-      transpose = get_transpose_of(get()->cpu_data(), M*M, N*N);
-    }
-
-    return transpose;
-  }
-//
-//  template <typename Dtype>
-//  static const boost::shared_ptr<caffe::Blob<Dtype> > getNormalizedTranspose() {
-//    static bool initialized = false;
-//    static boost::shared_ptr<caffe::Blob<float> > GKronGTranspose;
-//
-//    if (!initialized) {
-//      const double *normOfRows = getNormOfRows<double>()->cpu_data();
-//      const double *GKronG = get<double>()->cpu_data();
-//      Dtype temp[(M*M)*(N*N)];
-//
-//      for (int i = 0; i < M*M; ++i) {
-//        for (int j = 0; j < N*N; ++j) {
-//          temp[i*N*N + j] = GKronG[i*N*N + j]/normOfRows[i];
-//        }
-//      }
-//
-//      GKronGTranspose = get_transpose_of(temp, M*M, N*N);
-//      initialized = true;
-//    }
-//
-//    return GKronGTranspose;
-//  }
-//
-  const boost::shared_ptr<caffe::Blob<Dtype> > getTransposeNormalizedWithInv() {
-    if (NULL == transposeNormalizedWithInv.get()) {
+  const boost::shared_ptr<caffe::Blob<Dtype> > getNormalizedWithInv() {
+    if (NULL == normalizedWithInv.get()) {
       const double *normOfCols = WinogradGKronG<double>::getInstance(K)->getNormOfInvCols()->cpu_data();
       const double *GKronG = WinogradGKronG<double>::getInstance(K)->get()->cpu_data();
-      Dtype temp[(M*M)*(N*N)];
+
+      std::vector<int> shape;
+      shape.push_back(M*M);
+      shape.push_back(N*N);
+      normalizedWithInv = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+      Dtype *temp = normalizedWithInv->mutable_cpu_data();
 
       for (int i = 0; i < M*M; ++i) {
         for (int j = 0; j < N*N; ++j) {
           temp[i*N*N + j] = GKronG[i*N*N + j]*normOfCols[i];
         }
       }
-
-      transposeNormalizedWithInv = get_transpose_of(temp, M*M, N*N);
     }
 
-    return transposeNormalizedWithInv;
+    return normalizedWithInv;
   }
 
   const boost::shared_ptr<caffe::Blob<Dtype> > getNormOfRows() {
@@ -530,36 +500,20 @@ public :
 
       const double *G_kron_G = get()->cpu_data();
       for (int i = 0; i < M*M; ++i) {
-        double sum = 0;
-        for (int j = 0; j < N*N; ++j) {
-          sum += G_kron_G[i*N*N + j]*G_kron_G[i*N*N + j];
-        }
-        row_wise_l2norm_data[i] = sqrt(sum);
+        row_wise_l2norm_data[i] = cblas_dnrm2(N*N, G_kron_G + i*N*N, 1);
       }
     }
 
     return normOfRows;
   }
 
-//  static double getFrobNorm() {
-//    static bool initialized = false;
-//    static double ret = 0;
-//    if (!initialized) {
-//      double sum = 0;
-//      double *A = get<double>()->cpu_data();
-//      for (int i = 0; i < get<double>()->count(); ++i) {
-//        sum += ((double)A[i])*((double)A[i]);
-//      }
-//      ret = sqrt((double)sum)
-//      LOG(INFO) << "||G \\kron G|| " << ret;
-//      initialized = true;
-//    }
-//    return ret;
-//  }
-
-  const Dtype *getInv() {
+  const boost::shared_ptr<caffe::Blob<Dtype> > getInv() {
     if (NULL == inv.get()) {
-      inv.reset(new Dtype[(N*N)*(M*M)]);
+      std::vector<int> shape;
+      shape.push_back(N*N);
+      shape.push_back(M*M);
+      inv = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
+      Dtype *inv_data = inv->mutable_cpu_data();
 
       double S[N*N];
       double U[(M*M)*(N*N)], VT[(N*N)*(N*N)];
@@ -609,19 +563,11 @@ public :
         beta, A_inv_temp, ldc);
 
       for (int i = 0; i < (N*N)*(M*M); ++i) {
-        inv.get()[i] = A_inv_temp[i];
+        inv_data[i] = A_inv_temp[i];
       }
     }
 
-    return inv.get();
-  }
-
-  const boost::shared_ptr<caffe::Blob<Dtype> > getTransposeOfInv() {
-    if (NULL == invTranspose.get()) {
-      invTranspose = get_transpose_of(getInv(), N*N, M*M);
-    }
-
-    return invTranspose;
+    return inv;
   }
 
   const boost::shared_ptr<caffe::Blob<Dtype> > getNormOfInvCols() {
@@ -631,13 +577,9 @@ public :
       normOfInvCols = boost::shared_ptr<caffe::Blob<Dtype> >(new caffe::Blob<Dtype>(shape));
       Dtype *col_wise_l2norm_data = normOfInvCols->mutable_cpu_data();
 
-      const double *GGTInv = WinogradGKronG<double>::getInstance(K)->getInv();
+      const double *GGTInv = WinogradGKronG<double>::getInstance(K)->getInv()->cpu_data();
       for (int i = 0; i < M*M; ++i) {
-        double sum = 0;
-        for (int j = 0; j < N*N; ++j) {
-          sum += GGTInv[j*M*M + i]*GGTInv[j*M*M + i];
-        }
-        col_wise_l2norm_data[i] = sqrt(sum);
+        col_wise_l2norm_data[i] = cblas_dnrm2(N*N, GGTInv + i, M*M);
       }
     }
 

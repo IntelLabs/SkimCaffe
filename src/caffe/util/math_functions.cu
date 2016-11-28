@@ -219,11 +219,13 @@ void caffe_gpu_zerout(int count, Dtype *x, const Dtype *thresholds, int threshol
 
 template void caffe_gpu_zerout<int>(void * mutable_gpu_data, const int count, int th);
 template void caffe_gpu_zerout<unsigned int>(void * mutable_gpu_data, const int count, unsigned int th);
+template void caffe_gpu_zerout<long>(void * mutable_gpu_data, const int count, long th);
 template void caffe_gpu_zerout<float>(void * mutable_gpu_data, const int count, float th);
 template void caffe_gpu_zerout<double>(void * mutable_gpu_data, const int count, double th);
 
 template void caffe_gpu_zerout<int>(int count, const int *x, int *y, int th);
 template void caffe_gpu_zerout<unsigned int>(int count, const unsigned int *x, unsigned int *y, unsigned int th);
+template void caffe_gpu_zerout<long>(int count, const long *x, long *y, long th);
 template void caffe_gpu_zerout<float>(int count, const float *x, float *y, float th);
 template void caffe_gpu_zerout<double>(int count, const double *x, double *y, double th);
 
@@ -303,6 +305,7 @@ void caffe_gpu_shrinkage(void * mutable_gpu_data, const int count, Dtype th){
 
 template void caffe_gpu_shrinkage<int>(void * mutable_gpu_data, const int count, int th);
 template void caffe_gpu_shrinkage<unsigned int>(void * mutable_gpu_data, const int count, unsigned int th);
+template void caffe_gpu_shrinkage<long>(void * mutable_gpu_data, const int count, long th);
 template void caffe_gpu_shrinkage<float>(void * mutable_gpu_data, const int count, float th);
 template void caffe_gpu_shrinkage<double>(void * mutable_gpu_data, const int count, double th);
 
@@ -338,6 +341,7 @@ void caffe_gpu_if_zerout(const int n, const Dtype * x, Dtype *y, const Dtype *th
 
 template void caffe_gpu_if_zerout<int>(const int n, const int * x, int *y, int th);
 template void caffe_gpu_if_zerout<unsigned int>(const int n, const unsigned int* x, unsigned int *y, unsigned int th);
+template void caffe_gpu_if_zerout<long>(const int n, const long* x, long *y, long th);
 
 template void caffe_gpu_if_zerout<float>(const int n, const float * x, float *y, float th);
 template void caffe_gpu_if_zerout<double>(const int n, const double* x, double *y, double th);
@@ -361,6 +365,7 @@ void caffe_gpu_if_nonzerout(const int n, const Dtype * x, Dtype *y, Dtype th){
 
 template void caffe_gpu_if_nonzerout<int>(const int n, const int * x, int *y, int th);
 template void caffe_gpu_if_nonzerout<unsigned int>(const int n, const unsigned int* x, unsigned int *y, unsigned int th);
+template void caffe_gpu_if_nonzerout<long>(const int n, const long* x, long*y, long th);
 
 template void caffe_gpu_if_nonzerout<float>(const int n, const float * x, float *y, float th);
 template void caffe_gpu_if_nonzerout<double>(const int n, const double* x, double *y, double th);
@@ -652,6 +657,10 @@ void caffe_gpu_bar_group_lasso<unsigned int>(const int n, const int c, const uns
 }
 
 template <>
+void caffe_gpu_bar_group_lasso<long>(const int n, const int c, const long* x, long* y, bool along_column_or_row){
+	NOT_IMPLEMENTED;
+}
+template <>
 void caffe_gpu_bar_group_lasso<float>(const int n, const int c, const float* x, float* y, bool along_column_or_row){
 	int threads_per_block = Caffe::get_threads_per_block();
 	//LOG(INFO)<<"threads_per_block "<<threads_per_block;
@@ -725,6 +734,12 @@ template <>
 void caffe_gpu_block_group_lasso<unsigned int>(const int n, const int c,
 		const int blk_size_n, const int blk_size_c,
 		const unsigned int *x, unsigned int* y){
+	NOT_IMPLEMENTED;
+}
+template <>
+void caffe_gpu_block_group_lasso<long>(const int n, const int c,
+		const int blk_size_n, const int blk_size_c,
+		const long *x, long* y){
 	NOT_IMPLEMENTED;
 }
 
@@ -1073,31 +1088,38 @@ __global__ void scan_kernel(Dtype *g_odata, const Dtype *g_idata, int n)
   g_odata[thid] = temp[pout*n+thid]; // write output
 }
 
-
 // input matrix row major, output matrix col major when new_m >= n
 template <typename Dtype>
-__global__ void compact_kernel(double *out_matrix, const double *in_matrix, const Dtype *mask, double *out_b, const Dtype *in_b, int old_m, int new_m, int n, double impose_factor)
+__global__ void impose_sparsity_copyin_kernel(
+  const Dtype *weight, double *weight_temp, const double *A, double *A_temp, const Dtype *mask, int m, int n, double impose_factor, int repeat)
 {
   int tid = threadIdx.x + blockDim.x*blockIdx.x;
 
-  while (tid < old_m + n) {
-    if (tid >= old_m) {
-      for (int j = 0; j < n; ++j) {
-        out_matrix[j*(new_m + n) + tid - old_m + new_m] = 0;
+  while (tid < repeat*(m + n)) {
+    int i = tid/(m + n);
+    int j = tid%(m + n);
+
+    if (j < m) {
+      if (mask[i*m + j] == 0) {
+        for (int k = 0; k < n; ++k) {
+          A_temp[(i*n + k)*(m + n) + j] = impose_factor*A[j*n + k];
+        }
       }
-      out_matrix[(tid - old_m)*(new_m + n) + tid - old_m + new_m] = 1;
-    }
-    else if (tid == old_m - 1 && mask[tid] != new_m || mask[tid + 1] > mask[tid]) {
-      for (int j = 0; j < n; ++j) {
-        out_matrix[j*(new_m + n) + ((int)mask[tid])] = impose_factor*in_matrix[tid*n + j];
+      else {
+        for (int k = 0; k < n; ++k) {
+          A_temp[(i*n + k)*(m + n) + j] = 0;
+        }
       }
+
+      //weight_temp[i*(m + n) + j] = 0; /////
     }
-    
-    if (tid < new_m) {
-      out_b[tid] = 0;
-    }
-    else if (tid < new_m + n) {
-    	out_b[tid] = in_b[tid - new_m];
+    else {
+      /*for (int k = 0; k < n; ++k) {
+        A_temp[(i*n + k)*(m + n) + j] = 0;
+      }
+      A_temp[(i*n + j - m)*(m + n) + j] = 1;*/
+
+      weight_temp[i*(m + n) + j] = weight[i*n + j - m];
     }
 
     tid += gridDim.x*blockDim.x;
@@ -1105,57 +1127,60 @@ __global__ void compact_kernel(double *out_matrix, const double *in_matrix, cons
 }
 
 template <typename Dtype>
-void caffe_gpu_impose_sparsity(Dtype *weight_inout, Dtype *mask, double impose_factor, const double *A, int M, int N, int repeat)
+__global__ void impose_sparsity_copyout_kernel(
+  Dtype *weight, const double *weight_temp, int m, int n, int repeat)
 {
-  Dtype zero_cnt_temp;
-  caffe::caffe_gpu_if_zerout(M*M, mask, mask, (Dtype)0);
-  caffe::caffe_gpu_asum(M*M, mask, &zero_cnt_temp);
-  int zero_cnt = zero_cnt_temp;
-  
-  scan_kernel<<<1, M*M>>>(mask, mask, M*M);
-  
-	double *A_temp, *b;
-	CUDA_CHECK(cudaMalloc((void **)&A_temp, sizeof(double)*(zero_cnt + N*N)*(N*N)));
-  CUDA_CHECK(cudaMalloc((void **)&b, sizeof(double)*(zero_cnt + N*N)));
-  
-  compact_kernel<<<1, M*M + N*N>>>(A_temp, A, mask, b, weight_inout, M*M, (int)zero_cnt, N*N, impose_factor);
-  
-  double *A_array_cpu[] = { A_temp };
-  double *b_array_cpu[] = { b };
-  double **A_array, **b_array;
-  CUDA_CHECK(cudaMalloc((void **)&A_array, sizeof(A_array_cpu)));
-  CUDA_CHECK(cudaMalloc((void **)&b_array, sizeof(b_array_cpu)));
-  CUDA_CHECK(cudaMemcpy(A_array, A_array_cpu, sizeof(A_array_cpu), cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(b_array, b_array_cpu, sizeof(b_array_cpu), cudaMemcpyHostToDevice));
+  int tid = threadIdx.x + blockDim.x*blockIdx.x;
+
+  while (tid < repeat*n) {
+    int i = tid/n;
+    int j = tid%n;
+
+    weight[i*n + j] = weight_temp[i*(m + n) + j];
+
+    tid += gridDim.x*blockDim.x;
+  }
+}
+
+template <typename Dtype>
+void caffe_gpu_impose_sparsity(
+  Dtype *weight, double *weight_temp, double **weight_temp_ptr,
+  const double *A, double *A_temp, double **A_temp_ptr,
+  Dtype *mask, double impose_factor,
+  int M, int N, int repeat)
+{
+  impose_sparsity_copyin_kernel<<<CAFFE_GET_BLOCKS(repeat*(M*M + N*N)), CAFFE_CUDA_NUM_THREADS>>>(
+    weight, weight_temp, A, A_temp, mask, M*M, N*N, impose_factor, repeat);
   
 	int info;
 	CUBLAS_CHECK(cublasDgelsBatched(
 		Caffe::cublas_handle(), CUBLAS_OP_N,
-		zero_cnt + N*N, N*N,
+		M*M + N*N, N*N,
 		1,
-		A_array, zero_cnt + N*N,
-		b_array, zero_cnt + N*N,
+		A_temp_ptr, M*M + N*N,
+		weight_temp_ptr, M*M + N*N,
 		&info,
 		NULL,
-		1));
+		repeat));
 		
   if (0 != info) {
   	LOG(FATAL) << info << "th parameter is invalid";
   }
-  
-  cudaMemcpy(weight_inout, b, sizeof(double)*N*N, cudaMemcpyDeviceToDevice);
 
-	cudaFree(A_temp);  
-	cudaFree(b);
-	
-  cudaFree(A_array);
-  cudaFree(b_array);
+  impose_sparsity_copyout_kernel<<<CAFFE_GET_BLOCKS(repeat*N*N), CAFFE_CUDA_NUM_THREADS>>>(
+    weight, weight_temp, M*M, N*N, repeat);
 }
 
 template
-void caffe_gpu_impose_sparsity<double>(double *weight_inout, double *mask, double impose_factor, const double *A, int M, int N, int repeat);
+void caffe_gpu_impose_sparsity<double>(
+  double *weight, double *weight_temp, double **weight_temp_ptr,
+  const double *A, double *A_temp, double **A_temp_ptr,
+  double *mask, double impose_factor, int M, int N, int repeat);
 
 template
-void caffe_gpu_impose_sparsity<float>(float *weight_inout, float *mask, double impose_factor, const double *A, int M, int N, int repeat);
+void caffe_gpu_impose_sparsity<float>(
+  float *weight, double *weight_temp, double **weight_temp_ptr,
+  const double *A, double *A_temp, double **A_temp_ptr,
+  float *mask, double impose_factor, int M, int N, int repeat);
 
 }  // namespace caffe
