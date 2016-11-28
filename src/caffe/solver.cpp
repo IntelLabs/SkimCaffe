@@ -74,6 +74,8 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   measure_threshold_ = param_.measure_threshold();
   LOG(INFO) << "prune_threshold = " << prune_threshold_ << " measure_threshold = " << measure_threshold_;
   LOG(INFO) << "max_threshold_factor = " << param_.max_threshold_factor();
+  LOG(INFO) << "winograd_sparsity_factor = " << param_.winograd_sparsity_factor();
+  LOG(INFO) << "winograd_adjust_threshold = " << param_.winograd_adjust_threshold();
 }
 
 template <typename Dtype>
