@@ -67,6 +67,7 @@ layer {
       type: "constant"
       value: 0.2
     }
+    conv_mode: DIRECT_DCONV
   }
 }
 layer {
