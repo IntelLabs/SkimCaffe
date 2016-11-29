@@ -42,7 +42,8 @@
 #define LIBXSMM_UNIQUE(NAME) LIBXSMM_CONCATENATE(NAME, __LINE__)
 #define LIBXSMM_EXPAND(A) A
 
-#define LIBXSMM_VERSION3(MAJOR, MINOR, UPDATE) ((MAJOR) * 10000 + (MINOR) * 100 + (UPDATE))
+#define LIBXSMM_VERSION2(MAJOR, MINOR) ((MAJOR) * 10000 + (MINOR) * 100)
+#define LIBXSMM_VERSION3(MAJOR, MINOR, UPDATE) (LIBXSMM_VERSION2(MAJOR, MINOR) + (UPDATE))
 #define LIBXSMM_VERSION4(MAJOR, MINOR, UPDATE, PATCH) ((MAJOR) * 100000000 + (MINOR) * 1000000 + (UPDATE) * 10000 + (PATCH))
 
 #if defined(__cplusplus)
@@ -167,6 +168,14 @@
 # define LIBXSMM_PRAGMA_UNROLL
 #endif
 
+#if defined(__clang__)
+# define LIBXSMM_PRAGMA_OPTIMIZE_OFF LIBXSMM_PRAGMA(clang optimize off)
+# define LIBXSMM_PRAGMA_OPTIMIZE_ON  LIBXSMM_PRAGMA(clang optimize on)
+#else
+# define LIBXSMM_PRAGMA_OPTIMIZE_OFF
+# define LIBXSMM_PRAGMA_OPTIMIZE_ON
+#endif
+
 #if defined(_OPENMP) && (200805 <= _OPENMP) /*OpenMP 3.0*/
 # define LIBXSMM_OPENMP_COLLAPSE(N) collapse(N)
 #else
@@ -196,7 +205,7 @@
 #define LIBXSMM_ABS(A) (0 <= (A) ? (A) : -(A))
 #define LIBXSMM_MIN(A, B) ((A) < (B) ? (A) : (B))
 #define LIBXSMM_MAX(A, B) ((A) < (B) ? (B) : (A))
-#define LIBXSMM_CLMP(VALUE, LO, HI) ((LO) < (VALUE) ? ((HI) > (VALUE) ? (VALUE) : (HI)) : (LO))
+#define LIBXSMM_CLMP(VALUE, LO, HI) ((LO) < (VALUE) ? ((HI) > (VALUE) ? (VALUE) : LIBXSMM_MAX(HI, VALUE)) : LIBXSMM_MIN(LO, VALUE))
 #define LIBXSMM_MOD2(N, NPOT) ((N) & ((NPOT) - 1))
 #define LIBXSMM_MUL2(N, NPOT) ((N) << LIBXSMM_LOG2(NPOT))
 #define LIBXSMM_DIV2(N, NPOT) ((N) >> LIBXSMM_LOG2(NPOT))
@@ -242,11 +251,11 @@
 #endif
 #define LIBXSMM_ALIGN_VALUE(N, TYPESIZE, ALIGNMENT/*POT*/) (LIBXSMM_UP2((N) * (TYPESIZE), ALIGNMENT) / (TYPESIZE))
 #define LIBXSMM_ALIGN_VALUE2(N, POTSIZE, ALIGNMENT/*POT*/) LIBXSMM_DIV2(LIBXSMM_UP2(LIBXSMM_MUL2(N, POTSIZE), ALIGNMENT), POTSIZE)
-#define LIBXSMM_ALIGN(POINTER, ALIGNMENT/*POT*/) ((POINTER) + (LIBXSMM_ALIGN_VALUE((unsigned long long)(POINTER), 1, ALIGNMENT) - ((unsigned long long)(POINTER))) / sizeof(*(POINTER)))
-#define LIBXSMM_ALIGN2(POINTPOT, ALIGNMENT/*POT*/) ((POINTPOT) + LIBXSMM_DIV2(LIBXSMM_ALIGN_VALUE2((unsigned long long)(POINTPOT), 1, ALIGNMENT) - ((unsigned long long)(POINTPOT)), sizeof(*(POINTPOT))))
+#define LIBXSMM_ALIGN(POINTER, ALIGNMENT/*POT*/) ((POINTER) + (LIBXSMM_ALIGN_VALUE((uintptr_t)(POINTER), 1, ALIGNMENT) - ((uintptr_t)(POINTER))) / sizeof(*(POINTER)))
+#define LIBXSMM_ALIGN2(POINTPOT, ALIGNMENT/*POT*/) ((POINTPOT) + LIBXSMM_DIV2(LIBXSMM_ALIGN_VALUE2((uintptr_t)(POINTPOT), 1, ALIGNMENT) - ((uintptr_t)(POINTPOT)), sizeof(*(POINTPOT))))
 
 #define LIBXSMM_HASH_VALUE(N) ((((N) ^ ((N) >> 12)) ^ (((N) ^ ((N) >> 12)) << 25)) ^ ((((N) ^ ((N) >> 12)) ^ (((N) ^ ((N) >> 12)) << 25)) >> 27))
-#define LIBXSMM_HASH2(POINTER, ALIGNMENT/*POT*/, NPOT) LIBXSMM_MOD2(LIBXSMM_HASH_VALUE(LIBXSMM_DIV2((unsigned long long)(POINTER), ALIGNMENT)), NPOT)
+#define LIBXSMM_HASH2(POINTER, ALIGNMENT/*POT*/, NPOT) LIBXSMM_MOD2(LIBXSMM_HASH_VALUE(LIBXSMM_DIV2((uintptr_t)(POINTER), ALIGNMENT)), NPOT)
 
 #if defined(_MSC_VER) /* account for incorrect handling of __VA_ARGS__ */
 # define LIBXSMM_SELECT_ELEMENT(INDEX1/*one-based*/, .../*elements*/) LIBXSMM_CONCATENATE(LIBXSMM_SELECT_ELEMENT_, INDEX1)LIBXSMM_EXPAND((__VA_ARGS__))
@@ -427,15 +436,23 @@
 #if defined(LIBXSMM_OFFLOAD_BUILD) && \
   defined(__INTEL_OFFLOAD) && (!defined(_WIN32) || (1400 <= __INTEL_COMPILER))
 # define LIBXSMM_OFFLOAD(A) LIBXSMM_ATTRIBUTE(target(A))
-# define LIBXSMM_NO_OFFLOAD(FN, ...) ((void (*)(LIBXSMM_VARIADIC))(FN))(__VA_ARGS__)
+# define LIBXSMM_NO_OFFLOAD(RTYPE, FN, ...) ((RTYPE (*)(LIBXSMM_VARIADIC))(FN))(__VA_ARGS__)
 # if !defined(LIBXSMM_OFFLOAD_TARGET)
 #   define LIBXSMM_OFFLOAD_TARGET mic
 # endif
 #else
 # define LIBXSMM_OFFLOAD(A)
-# define LIBXSMM_NO_OFFLOAD(FN, ...) (FN)(__VA_ARGS__)
+# define LIBXSMM_NO_OFFLOAD(RTYPE, FN, ...) (FN)(__VA_ARGS__)
 #endif
 #define LIBXSMM_RETARGETABLE LIBXSMM_OFFLOAD(LIBXSMM_OFFLOAD_TARGET)
+
+#if defined(LIBXSMM_OFFLOAD_TARGET)
+# pragma offload_attribute(push,target(LIBXSMM_OFFLOAD_TARGET))
+#endif
+#include <stdint.h>
+#if defined(LIBXSMM_OFFLOAD_TARGET)
+# pragma offload_attribute(pop)
+#endif
 
 #endif /*LIBXSMM_MACROS_H*/
 

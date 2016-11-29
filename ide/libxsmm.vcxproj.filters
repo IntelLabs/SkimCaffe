@@ -45,9 +45,6 @@
     <ClInclude Include="..\src\libxsmm_trace.h">
       <Filter>src</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\libxsmm_intrinsics_x86.h">
-      <Filter>src</Filter>
-    </ClInclude>
     <ClInclude Include="..\src\libxsmm_gemm_diff.h">
       <Filter>src</Filter>
     </ClInclude>
@@ -76,9 +73,6 @@
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="..\src\generator_gemm_sse3_microkernel.h">
-      <Filter>src</Filter>
-    </ClInclude>
-    <ClInclude Include="..\src\libxsmm_cpuid_x86.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="..\src\generator_spgemm_csc_asparse.h">
@@ -156,14 +150,41 @@
     <ClInclude Include="..\include\libxsmm_config.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\generator_convolution_forward_int16_avx512.h">
-      <Filter>src</Filter>
-    </ClInclude>
     <ClInclude Include="..\src\generator_gemm_avx512_microkernel_nofsdbcst.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="..\src\generator_gemm_sse3_avx_avx2_avx512.h">
       <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\perf_jitdump.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\generator_convolution_backward_avx2.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\generator_convolution_weight_update_avx2.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\libxsmm_dnn_convolution_backward.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\libxsmm_dnn_convolution_weight_update.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\libxsmm_sync.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\libxsmm_intrinsics_x86.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\libxsmm_cpuid.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\libxsmm_dnn_handle.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\libxsmm_spmdm.h">
+      <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -287,13 +308,28 @@
     <ClCompile Include="..\src\libxsmm_dump.c">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\generator_convolution_forward_int16_avx512.c">
-      <Filter>src</Filter>
-    </ClCompile>
     <ClCompile Include="..\src\generator_gemm_avx512_microkernel_nofsdbcst.c">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="..\src\generator_gemm_sse3_avx_avx2_avx512.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\generator_convolution_backward_avx2.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\generator_convolution_weight_update_avx2.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\libxsmm_dnn_convolution_backward.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\libxsmm_dnn_convolution_weight_update.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\libxsmm_dnn_handle.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\libxsmm_spmdm.c">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
@@ -318,8 +354,6 @@
     <None Include="..\README.sh" />
     <None Include="..\.travis.yml" />
     <None Include="..\.gitignore" />
-    <None Include="..\.codecov" />
-    <None Include="..\.env" />
     <None Include="..\Makefile.inc" />
     <None Include="..\scripts\libxsmm_source.sh">
       <Filter>scripts</Filter>
@@ -332,6 +366,17 @@
     <None Include="..\src\template\libxsmm.f">
       <Filter>src\template</Filter>
     </None>
+    <None Include="..\.codecov.env" />
+    <None Include="..\.codefile" />
+    <None Include="..\.travis.env" />
+    <None Include="..\.travis.sh" />
+    <None Include="..\scripts\tool_inspector.sh">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="..\scripts\libxsmm_config.py">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="..\.buildkite.env" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="..\version.txt" />

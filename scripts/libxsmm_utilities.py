@@ -30,9 +30,7 @@
 ## Hans Pabst (Intel Corp.)
 ###############################################################################
 import itertools
-import operator
 import sys, os
-import re
 
 try:
     from functools import reduce
@@ -64,13 +62,14 @@ def itertools_product(*args):
         yield tuple(prod)
 
 
-def load_mnklist(argv, threshold, format = 0, resultset = set()):
-    if (0 == format): # indexes format
+def load_mnklist(argv, threshold, inputformat = 0, resultset = None):
+    if (None == resultset): resultset = set()
+    if (0 == inputformat): # indexes format
         resultset = set(map(lambda mnk: tuple(map(int, mnk.split("_"))), argv))
-    elif (-1 == format): # new input format
+    elif (-1 == inputformat): # new input format
         groups = map(lambda group: [int(i) for i in group.split()], " ".join(argv[0:]).split(","))
         resultset = set(itertools.chain(*[list(itertools_product(*(i, i, i))) for i in groups]))
-    elif (-2 == format): # legacy format
+    elif (-2 == inputformat): # legacy format
         mlist = list(map(int, map(lambda s: str(s).replace(",", " ").strip(), argv[2:2+int(argv[0])])))
         nlist = list(map(int, map(lambda s: str(s).replace(",", " ").strip(), argv[2+int(argv[0]):2+int(argv[0])+int(argv[1])])))
         klist = list(map(int, map(lambda s: str(s).replace(",", " ").strip(), argv[2+int(argv[0])+int(argv[1]):])))
@@ -89,7 +88,7 @@ def load_mnklist(argv, threshold, format = 0, resultset = set()):
                     resultset.add((m, n, k))
     else:
         sys.tracebacklimit = 0
-        raise ValueError("load_mnklist: unexpected format!")
+        raise ValueError("load_mnklist: unexpected input format!")
     if (0 != threshold): # threshold requested
         return set(filter(lambda mnk: (0 < mnk[0]) and (0 < mnk[1]) and (0 < mnk[2]) and (threshold >= (mnk[0] * mnk[1] * mnk[2])), resultset))
     else:
@@ -148,32 +147,47 @@ def align_value(n, typesize, alignment):
 
 
 def version_branch():
-    versionfile = os.path.join(os.path.dirname(sys.argv[0]), "..", "version.txt")
+    versionfilename = os.path.join(os.path.dirname(sys.argv[0]), "..", "version.txt")
+    versionfile = open(versionfilename, "r")
     version = "1.0"
-    file = open(versionfile, "r")
     try:
-        version = file.read().replace("\n", "")
-        versionlist = version.split("-")
-        if (1 < len(versionlist)):
-            result = ("-".join(map(str, versionlist[1:])), versionlist[0])
+        versionlist = versionfile.read().replace("\n", "").split("-")
+        n = len(versionlist)
+        if (1 < n):
+            version = versionlist[n-1]
+            if (1 == len(version.split("."))):
+                version = "-".join(map(str, versionlist[n-2:]))
+                branch = "-".join(map(str, versionlist[0:n-2]))
+            else:
+                branch = "-".join(map(str, versionlist[0:n-1]))
+            result = (version, branch)
         else:
             result = (version, "")
     finally:
-        file.close()
+        versionfile.close()
     return result
 
 
 def version_numbers(version):
     versionlist = version.split("-")
-    if (1 < len(versionlist)): patch = int(versionlist[1])
-    else: patch = 0
-    if (0 < len(versionlist)): versionlist = versionlist[0].split(".")
-    else: versionlist = list()
-    if (0 < len(versionlist)): major = int(versionlist[0])
+    n = len(versionlist)
+    if (1 < n):
+        patchlist = versionlist[n-1]
+        if (1 == len(patchlist.split("."))):
+            versionlist = versionlist[n-2].split(".")
+            patch = int(patchlist)
+        else:
+            versionlist = patchlist.split(".")
+            patch = 0
+    else:
+        versionlist = version.split(".")
+        patch = 0
+    n = len(versionlist)
+    if (0 < n): major = int(versionlist[0])
     else: major = 1
-    if (1 < len(versionlist)): minor = int(versionlist[1])
+    if (1 < n): minor = int(versionlist[1])
     else: minor = 0
-    if (2 < len(versionlist)): update = int(versionlist[2])
+    if (2 < n): update = int(versionlist[2])
     else: update = 0
     return major, minor, update, patch
 

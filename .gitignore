@@ -15,10 +15,12 @@ ide/r*ah
 tmp
 .state
 .make
+codecov-*.txt
 keywords.txt
 notes.txt
 err*.txt
 out*.txt
+log.txt
 _*.txt
 *.stackdump
 *.opensdf
