@@ -370,14 +370,15 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 		    libxsmm_conv_desc_.pad_w_in = 0; // pad_w;
 		    libxsmm_conv_desc_.pad_h_out = 0;
 		    libxsmm_conv_desc_.pad_w_out = 0;
-		    libxsmm_conv_desc_.splits = group_;
+//		    libxsmm_conv_desc_.splits = group_;
 		    libxsmm_conv_desc_.threads = 1;
 		    libxsmm_conv_desc_.algo = LIBXSMM_DNN_CONV_ALGO_DIRECT;
 		    libxsmm_conv_desc_.buffer_format = LIBXSMM_DNN_CONV_FORMAT_LIBXSMM;
 		    libxsmm_conv_desc_.filter_format = LIBXSMM_DNN_CONV_FORMAT_LIBXSMM;
 		    libxsmm_conv_desc_.fuse_ops = LIBXSMM_DNN_CONV_FUSE_NONE;
 		    libxsmm_conv_desc_.options = LIBXSMM_DNN_CONV_OPTION_NONE;
-		    libxsmm_conv_desc_.datatype = LIBXSMM_DNN_DATATYPE_F32;
+		    libxsmm_conv_desc_.datatype_in = LIBXSMM_DNN_DATATYPE_F32;
+		    libxsmm_conv_desc_.datatype_out = LIBXSMM_DNN_DATATYPE_F32;
 
 		    libxsmm_dnn_err_t status;
 
