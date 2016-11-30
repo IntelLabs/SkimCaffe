@@ -16,18 +16,14 @@ More details on direct sparse convolution is described at: https://arxiv.org/abs
 
 1) Set up Intel compiler environment (compilervars.sh or compilervars.csh)
 
-2) Compile SpMP:
+2) Build Caffe as usual
 
-```
-cd src/SpMP
-make
-cd ../libxsmm
-make
-```
+Additional options:
+KNL=1 # compiles for Knights Landing
+SSE=1 # compiles for SSE
+If neither KNL nor SSE is defined, by default we compile for AVX2 (Haswell or later)
 
-3) Build Caffe as usual
-
-4) Test:
+3) Test:
 
 ```
 bzip2 -d models/bvlc_reference_caffenet/fc_0.1_ft_caffenet_0.57368_5e-05.caffemodel.bz2

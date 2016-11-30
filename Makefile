@@ -465,6 +465,28 @@ endif
 
 all: lib tools examples
 
+libxsmm:
+	@ \
+	cd src/libxsmm; \
+	if [ -n DEBUG ] && [ "$(DEBUG)" == "1" ]; then \
+		make OMP=1 DBG=1; \
+	elif [ -n KNL ] && [ "$(KNL)" == "1" ]; then \
+		make OMP=1 OPT=3 AVX=3; \
+	elif [ -n SSE ] && [ "$(SSE)" == "1" ]; then \
+		make OMP=1 OPT=3; \
+	else \
+		make OMP=1 OPT=3 AVX=2; \
+	fi
+
+SpMP:
+	@ \
+	cd src/SpMP; \
+	if [ -n DEBUG ] && [ "$(DEBUG)" == "1" ]; then \
+		make DBG=1; \
+	else \
+		make; \
+	fi
+
 lib: $(STATIC_NAME) $(DYNAMIC_NAME)
 
 everything: $(EVERYTHING_TARGETS)
@@ -579,12 +601,12 @@ $(BUILD_DIR)/.linked:
 $(ALL_BUILD_DIRS): | $(BUILD_DIR_LINK)
 	@ mkdir -p $@
 
-$(DYNAMIC_NAME): $(OBJS) | $(LIB_BUILD_DIR)
+$(DYNAMIC_NAME): $(OBJS) libxsmm SpMP | $(LIB_BUILD_DIR)
 	@ echo LD -o $@
 	$(Q)$(CXX) -shared -o $@ $(OBJS) $(VERSIONFLAGS) $(LINKFLAGS) $(LDFLAGS)
 	@ cd $(BUILD_DIR)/lib; rm -f $(DYNAMIC_NAME_SHORT);   ln -s $(DYNAMIC_VERSIONED_NAME_SHORT) $(DYNAMIC_NAME_SHORT)
 
-$(STATIC_NAME): $(OBJS) | $(LIB_BUILD_DIR)
+$(STATIC_NAME): $(OBJS) libxsmm SpMP | $(LIB_BUILD_DIR)
 	@ echo AR -o $@
 	$(Q)ar rcs $@ $(OBJS)
 
@@ -664,6 +686,8 @@ clean:
 	@- $(RM) -rf $(DISTRIBUTE_DIR)
 	@- $(RM) $(PY$(PROJECT)_SO)
 	@- $(RM) $(MAT$(PROJECT)_SO)
+	cd src/libxsmm; make clean
+	cd src/SpMP; make clean
 
 supercleanfiles:
 	$(eval SUPERCLEAN_FILES := $(strip \
