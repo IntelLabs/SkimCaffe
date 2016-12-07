@@ -41,6 +41,7 @@ void BatchNormLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   for (int i = 0; i < this->blobs_.size(); ++i) {
     ParamSpec* fixed_param_spec = this->layer_param_.add_param();
     fixed_param_spec->set_lr_mult(0.);
+    fixed_param_spec->set_decay_mult(0.);
   }
 }
 
