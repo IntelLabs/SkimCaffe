@@ -16,6 +16,20 @@ void AdaDeltaSolver<Dtype>::AdaDeltaPreSolve() {
   }
 }
 
+template <typename Dtype>
+void AdaDeltaSolver<Dtype>::checkIfLearnableParameterResized() {
+  SGDSolver<Dtype>::checkIfLearnableParameterResized();
+
+  const vector<Blob<Dtype>*>& net_params = this->net_->learnable_params();
+  size_t update_history_offset = net_params.size();
+  for (int i = 0; i < net_params.size(); ++i) {
+    const vector<int>& shape = net_params[i]->shape();
+    if (this->history_[i + update_history_offset]->shape() != shape) {
+      this->history_[i + update_history_offset]->Reshape(shape);
+    }
+  }
+}
+
 #ifndef CPU_ONLY
 template <typename Dtype>
 void adadelta_update_gpu(int N, Dtype* g, Dtype* h, Dtype* h2, Dtype momentum,

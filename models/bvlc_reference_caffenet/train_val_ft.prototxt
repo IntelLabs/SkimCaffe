@@ -286,7 +286,6 @@ layer {
   type: "InnerProduct"
   bottom: "pool5"
   top: "fc6"
-  connectivity_mode: DISCONNECTED_ELTWISE
   param {
     lr_mult: 1
     decay_mult: 1
@@ -327,7 +326,6 @@ layer {
   type: "InnerProduct"
   bottom: "fc6"
   top: "fc7"
-  connectivity_mode: DISCONNECTED_ELTWISE
   param {
     lr_mult: 1
     decay_mult: 1
@@ -368,7 +366,6 @@ layer {
   type: "InnerProduct"
   bottom: "fc7"
   top: "fc8"
-  connectivity_mode: DISCONNECTED_ELTWISE
   param {
     lr_mult: 1
     decay_mult: 1

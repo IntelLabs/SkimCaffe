@@ -232,6 +232,14 @@ message SolverParameter {
   optional float kernel_shape_decay = 42 [default = 0.0]; // The group weight decay on all elemements having the same coordinate in each kernel
   optional float block_group_decay = 43 [default = 0.0]; // The group weight decay on all elemements having the same coordinate in each kernel
 
+  optional float prune_threshold = 44 [default = 0.0001]; // threshold used for making certain weights to zero
+  optional float measure_threshold = 45 [default = 0.0001]; // threshold used for measuring sparsity
+
+  optional float max_threshold_factor = 46 [default = 1]; // use larger threshold when partial derivative is small
+  
+  optional float winograd_sparsity_factor = 47 [default = 0]; // larger sparsity_factor prioritizes sparsity. 0 uses pinv(A)
+  optional int32 winograd_adjust_threshold = 48 [default = 1]; // 1: adjust winograd threshold based on inverse of l2 norm of columns of pinv(A), 0: no adjustment
+
   // DEPRECATED: old solver enum types, use string instead
   enum SolverType {
     SGD = 0;

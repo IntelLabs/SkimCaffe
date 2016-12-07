@@ -7,6 +7,7 @@
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/io.hpp"
 #include "caffe/util/mmio.hpp"
+#include "caffe/util/winograd.hpp"
 
 namespace caffe {
 
@@ -178,6 +179,7 @@ void Blob<Dtype>::ShareDiff(const Blob& other) {
 // Blob<int> or Blob<unsigned int>.
 template <> void Blob<unsigned int>::Update() { NOT_IMPLEMENTED; }
 template <> void Blob<int>::Update() { NOT_IMPLEMENTED; }
+template <> void Blob<long>::Update() { NOT_IMPLEMENTED; }
 
 template <typename Dtype>
 void Blob<Dtype>::Update() {
@@ -213,9 +215,8 @@ void Blob<Dtype>::Update() {
 
 
 template <typename Dtype>
-void Blob<Dtype>::Zerout() {
+void Blob<Dtype>::Zerout(Dtype thre) {
   // Zero out elements whose values are smaller than thre.
-  Dtype thre = Dtype(ZEROUT_THRESHOLD);
   Dtype* data_ptr_tmp = 0;
   switch (data_->head()) {
   case SyncedMemory::HEAD_AT_CPU:
@@ -225,7 +226,7 @@ void Blob<Dtype>::Zerout() {
     //    static_cast<Dtype*>(data_->mutable_cpu_data()));
 	  data_ptr_tmp = static_cast<Dtype*>(data_->mutable_cpu_data());
 	  for(int i=0;i<count_;i++){
-		  if(data_ptr_tmp[i]<thre && data_ptr_tmp[i]>(-thre)){
+		  if(data_ptr_tmp[i]<=thre && data_ptr_tmp[i]>=(-thre)){
 			  data_ptr_tmp[i]=0;
 		  }
 	  }
@@ -251,21 +252,23 @@ void Blob<Dtype>::Zerout() {
 }
 
 template <typename Dtype>
-void Blob<Dtype>::Disconnect(DisconnectMode mode,int group) {
-	this->Zerout();
+void Blob<Dtype>::Disconnect(DisconnectMode mode,Dtype thre, int group) {
+	this->Zerout(thre);
 	if(mode == ELTWISE){
 		switch (Caffe::mode()) {
 			case Caffe::CPU: {
 				  caffe_cpu_if_nonzerout(count_,
 						  static_cast<const Dtype*>(data_->cpu_data()),
-						  static_cast<Dtype*>(connectivity_->mutable_cpu_data()));
+						  static_cast<Dtype*>(connectivity_->mutable_cpu_data()),
+              thre);
 				  break;
 			}
 			case Caffe::GPU: {
 #ifndef CPU_ONLY
 				  caffe_gpu_if_nonzerout(count_,
 						  static_cast<const Dtype*>(data_->gpu_data()),
-						  static_cast<Dtype*>(connectivity_->mutable_gpu_data()));
+						  static_cast<Dtype*>(connectivity_->mutable_gpu_data()),
+              thre);
 #else
 			  NO_GPU;
 #endif
@@ -287,14 +290,74 @@ void Blob<Dtype>::Disconnect(DisconnectMode mode,int group) {
 }
 
 template <typename Dtype>
-Dtype Blob<Dtype>::GetSparsity(){
-	int zero_num = 0;
-	for(int i=0;i<this->count();i++){
-		if( this->cpu_data()[i]<ZEROUT_THRESHOLD && this->cpu_data()[i]>-ZEROUT_THRESHOLD){
-			zero_num++;
-		}
-	}
-	return (Dtype)(zero_num) / (Dtype)(this->count());
+Dtype Blob<Dtype>::GetSparsity(Dtype thre){
+  if (4 == num_axes() && shape(0) == shape(1) && (shape(0) == 6 || shape(0) == 8)) {
+    // winograd layer
+    int N = shape(2);
+    int C = shape(3);
+    int K = shape(0) - 4 + 1;
+
+    WinogradGKronG<Dtype> *A = WinogradGKronG<Dtype>::getInstance(K);
+    int M = A->M;
+
+    Dtype *temp = new Dtype[(N*C)*(K*K)];
+    caffe_cpu_gemm(
+        CblasTrans, CblasTrans,
+        N*C, K*K, M*M,
+        (Dtype)1, cpu_data(),
+        A->getInv()->cpu_data(),
+        (Dtype)0, temp);
+    caffe_cpu_if_zerout((N*C)*(K*K), temp, temp, thre);
+    Dtype sparsity = caffe_cpu_asum((N*C)*(K*K), temp)/(N*C*K*K);
+    delete[] temp;
+    return sparsity;
+  }
+  else {
+    int zero_num = 0;
+    for(int i=0;i<this->count();i++){
+      if( this->cpu_data()[i]<=thre && this->cpu_data()[i]>=-thre){
+        zero_num++;
+      }
+    }
+    return (Dtype)(zero_num) / (Dtype)(this->count());
+  }
+}
+
+template <typename Dtype>
+Dtype Blob<Dtype>::GetWinogradSparsity(Dtype thre){
+  if (4 == num_axes() && shape(2) == shape(3) && (shape(2) == 3 || shape(2) == 5)) {
+    int N = shape(0);
+    int C = shape(1);
+    int K = shape(2);
+
+    WinogradGKronG<Dtype> *A = WinogradGKronG<Dtype>::getInstance(K);
+    int M = A->M;
+
+    Dtype *temp = new Dtype[(N*C)*(M*M)];
+    caffe_cpu_gemm(
+        CblasNoTrans, CblasTrans,
+        N*C, M*M, K*K,
+        (Dtype)1, cpu_data(),
+        A->get()->cpu_data(),
+        (Dtype)0, temp);
+    caffe_cpu_if_zerout((N*C)*(M*M), temp, temp, thre);
+    Dtype sparsity = caffe_cpu_asum((N*C)*(M*M), temp)/(N*C*M*M);
+    delete[] temp;
+    return sparsity;
+  }
+  else if (4 == num_axes() && shape(0) == shape(1) && (shape(0) == 6 || shape(0) == 8)) {
+    // winograd layer
+    int zero_num = 0;
+    for(int i=0;i<this->count();i++){
+      if( this->cpu_data()[i]<=thre && this->cpu_data()[i]>=-thre){
+        zero_num++;
+      }
+    }
+    return (Dtype)(zero_num) / (Dtype)(this->count());
+  }
+  else {
+    return GetSparsity(thre);
+  }
 }
 
 template <> unsigned int Blob<unsigned int>::asum_data() const {
@@ -303,6 +366,11 @@ template <> unsigned int Blob<unsigned int>::asum_data() const {
 }
 
 template <> int Blob<int>::asum_data() const {
+  NOT_IMPLEMENTED;
+  return 0;
+}
+
+template <> long Blob<long>::asum_data() const {
   NOT_IMPLEMENTED;
   return 0;
 }
@@ -342,6 +410,11 @@ template <> int Blob<int>::asum_diff() const {
   return 0;
 }
 
+template <> long Blob<long>::asum_diff() const {
+  NOT_IMPLEMENTED;
+  return 0;
+}
+
 template <typename Dtype>
 Dtype Blob<Dtype>::asum_diff() const {
   if (!diff_) { return 0; }
@@ -373,6 +446,11 @@ template <> unsigned int Blob<unsigned int>::sumsq_data() const {
 }
 
 template <> int Blob<int>::sumsq_data() const {
+  NOT_IMPLEMENTED;
+  return 0;
+}
+
+template <> long Blob<long>::sumsq_data() const {
   NOT_IMPLEMENTED;
   return 0;
 }
@@ -414,6 +492,11 @@ template <> int Blob<int>::sumsq_diff() const {
   return 0;
 }
 
+template <> long Blob<long>::sumsq_diff() const {
+  NOT_IMPLEMENTED;
+  return 0;
+}
+
 template <typename Dtype>
 Dtype Blob<Dtype>::sumsq_diff() const {
   Dtype sumsq;
@@ -449,6 +532,10 @@ template <> void Blob<int>::scale_data(int scale_factor) {
   NOT_IMPLEMENTED;
 }
 
+template <> void Blob<long>::scale_data(long scale_factor) {
+  NOT_IMPLEMENTED;
+}
+
 template <typename Dtype>
 void Blob<Dtype>::scale_data(Dtype scale_factor) {
   Dtype* data;
@@ -479,6 +566,10 @@ template <> void Blob<unsigned int>::scale_diff(unsigned int scale_factor) {
 }
 
 template <> void Blob<int>::scale_diff(int scale_factor) {
+  NOT_IMPLEMENTED;
+}
+
+template <> void Blob<long>::scale_diff(long scale_factor) {
   NOT_IMPLEMENTED;
 }
 
@@ -666,6 +757,7 @@ void Blob<float>::ToProto(BlobProto* proto, bool write_diff) const {
 
 template <> void Blob<unsigned int>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
 template <> void Blob<int>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
+template <> void Blob<long>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
 
 template <typename Dtype>
 void Blob<Dtype>::Snapshot(string filename, bool write_diff) const{
@@ -894,6 +986,7 @@ void Blob<Dtype>:: WriteToNistMMIOSparse(string filename) const{
 INSTANTIATE_CLASS(Blob);
 template class Blob<int>;
 template class Blob<unsigned int>;
+template class Blob<long>;
 
 }  // namespace caffe
 

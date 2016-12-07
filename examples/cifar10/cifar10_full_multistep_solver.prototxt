@@ -10,9 +10,9 @@ test_iter: 100
 # Carry out testing every 1000 training iterations.
 test_interval: 1000
 # The base learning rate, momentum and the weight decay of the network.
-base_lr: 0.001
+#base_lr: 0.001
 momentum: 0.9
-weight_decay: 0.004
+#weight_decay: 0.004
 
 # The learning rate policy
 lr_policy: "multistep"
@@ -28,6 +28,6 @@ display: 200
 max_iter: 300000
 # snapshot intermediate results
 snapshot: 10000
-snapshot_prefix: "examples/cifar10/cifar10_full"
+#snapshot_prefix: "examples/cifar10/cifar10_full"
 # solver mode: CPU or GPU
-solver_mode: GPU
+#solver_mode: GPU

@@ -1,5 +1,5 @@
 CXX = icpc
-CXXFLAGS = -fopenmp -I../../src/
+CXXFLAGS = -fopenmp -DUSE_MKL -I../../src/
 LDFLAGS = -L../../src/SpMP -lspmp -mkl
 
 #SEP = yes
@@ -44,6 +44,12 @@ else
   endif
 endif
 
+ifeq (yes, $(DBG))
+  NVCC_FLAGS += -O0 -g
+else
+  NVCC_FLAGS += -O3
+endif
+
 sconv_test: sconv_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -61,6 +67,19 @@ fc_test.s: fc_test.cpp ../../include/caffe/util/spgemm.hpp
 
 csrmm_test.s: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)
+
+winograd_test: winograd_test.cpp
+	$(CXX) $(CXXFLAGS) -I../../include -I../../.build_release/src/ -I/usr/local/cuda/include -I/usr/local/cudnn/cudnnv4/cuda/include -o $@ $^ $(LDFLAGS) -lglog -L../../.build_release/lib -lcaffe
+
+winograd_test_cuda: winograd_test.o
+#winograd_test_cuda.o
+	$(CXX) $(LDFLAGS) -o $@ $^ -lglog -L../../.build_release/lib -lcaffe -L/usr/local/cuda/lib64 -lcudart -lcublas
+
+winograd_test_cuda.o: winograd_test.cu winograd_test.h
+	nvcc -ccbin=$(CXX) -Xcompiler -fPIC $(NVCC_FLAGS) -DCUDA -DUSE_MKL -I../../include -I../../.build_release/src/ -I/usr/local/cuda/include -I/usr/local/cudnn/cudnnv4/cuda/include -o $@ -c winograd_test.cu -gencode arch=compute_20,code=sm_20 -gencode arch=compute_20,code=sm_21 -gencode arch=compute_30,code=sm_30 -gencode arch=compute_35,code=sm_35 -gencode arch=compute_50,code=sm_50 -gencode arch=compute_50,code=compute_50
+
+winograd_test.o: winograd_test.cpp
+	$(CXX) $(CXXFLAGS) -DCUDA -I../../include -I../../.build_release/src/ -I/usr/local/cuda/include -I/usr/local/cudnn/cudnnv4/cuda/include -o $@ -c $^
 
 clean:
 	rm -f sconv_test fc_test csrmm_test
