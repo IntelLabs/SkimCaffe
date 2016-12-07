@@ -55,7 +55,9 @@ void FFTLayer<Dtype>::WeightAlign() {
   shape.push_back(fft_height_);
   shape.push_back(2*(fft_width_/2 + 1)); /* 2x for complex type */
   fft_weight_.Reshape(shape);
+  fft_weight_conj_.Reshape(shape);
   Dtype *fft_weight_data = fft_weight_.mutable_cpu_data();
+  Dtype *fft_weight_conj_data = fft_weight_conj_.mutable_cpu_data();
 
   int in_N[2];
   in_N[0] = fft_height_;
@@ -72,8 +74,6 @@ void FFTLayer<Dtype>::WeightAlign() {
   fft_map_real_size_ = fft_height_*fft_width_;
   fft_map_complex_size_ = out_N[0]*out_N[1];
 
-  Dtype *fft_weight_temp = new Dtype[fft_weight_.count()];
-
   void *fft_weight_handle = caffe_cpu_fft_plan_many_dft_r2c<Dtype>(
       2, /* dimension */
       in_N, /* size */
@@ -82,7 +82,7 @@ void FFTLayer<Dtype>::WeightAlign() {
       in_N_inplace, /* inembed */
       1, /* istride */
       in_N_inplace[0]*in_N_inplace[1], /* idist */
-      (std::complex<Dtype> *)fft_weight_temp, /* out */
+      (std::complex<Dtype> *)fft_weight_data, /* out */
       out_N, /* onembed */
       1, /* ostride */
       fft_map_complex_size_, /* odist */
@@ -110,16 +110,27 @@ void FFTLayer<Dtype>::WeightAlign() {
     for (int c = 0; c < ch_gr; ++c) {
       for (int y = 0; y < shape[2]; ++y) {
         for (int x = 0; x < shape[3]/2; ++x) {
-          fft_weight_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2] =
-              fft_weight_temp[fft_weight_.offset(n, c, y, 2*x)];
-          fft_weight_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2 + 1] =
-              -fft_weight_temp[fft_weight_.offset(n, c, y, 2*x + 1)];
+          fft_weight_conj_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2] =
+              fft_weight_data[fft_weight_.offset(n, c, y, 2*x)];
+          fft_weight_conj_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2 + 1] =
+              -fft_weight_data[fft_weight_.offset(n, c, y, 2*x + 1)];
         }
       }
     }
   }
 
-  delete[] fft_weight_temp;
+  for (int n = 0; n < this->conv_out_channels_; ++n) {
+    for (int c = 0; c < ch_gr; ++c) {
+      for (int y = 0; y < shape[2]; ++y) {
+        for (int x = 0; x < shape[3]/2; ++x) {
+          fft_weight_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2] =
+              fft_weight_conj_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2];
+          fft_weight_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2 + 1] =
+              -fft_weight_conj_data[(((y*shape[3]/2 + x)*this->conv_out_channels_ + n)*ch_gr + c)*2 + 1];
+        }
+      }
+    }
+  }
 
 //  for (int n = 0; n < 1; ++n) {
 //    for (int c = 0; c < 1; ++c) {
@@ -166,11 +177,39 @@ void FFTLayer<Dtype>::WeightAlign() {
       fft_map_complex_size_, /* odist */
       FFTW_ESTIMATE);
 
+  fft_back_handle_ = caffe_cpu_fft_plan_many_dft_r2c<Dtype>(
+      2, /* dimension */
+      in_N, /* size */
+      this->conv_out_channels_, /* howmany */
+      fft_map_in_real_, /* input */
+      in_N, /* inembed */
+      1, /* istride */
+      fft_map_real_size_, /* idist */
+      fft_map_in_complex_, /* out */
+      out_N, /* onembed */
+      1, /* ostride */
+      fft_map_complex_size_, /* odist */
+      FFTW_ESTIMATE);
+
   // 3. Plan output activation inverse transformation
   ifft_handle_ = caffe_cpu_fft_plan_many_dft_c2r<Dtype>(
       2, /* dimension */
       in_N, /* size */
       this->conv_out_channels_, /* howmany */
+      fft_map_out_complex_, /* input */
+      out_N, /* inembed */
+      1, /* istride */
+      fft_map_complex_size_, /* idist */
+      fft_map_out_real_, /* out */
+      in_N, /* onembed */
+      1, /* ostride */
+      fft_map_real_size_, /* odist */
+      FFTW_ESTIMATE);
+
+  ifft_back_handle_ = caffe_cpu_fft_plan_many_dft_c2r<Dtype>(
+      2, /* dimension */
+      in_N, /* size */
+      this->conv_in_channels_, /* howmany */
       fft_map_out_complex_, /* input */
       out_N, /* inembed */
       1, /* istride */
@@ -209,10 +248,7 @@ void FFTLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
         // 0-padding: map_in --> fft_map_in_real_
         caffe_memset(fft_map_real_size_*sizeof(float), 0, fft_map_in_real_);
         for (int y = 0; y < height; ++y) {
-          for (int x = 0; x < width; ++x) {
-            fft_map_in_real_[(c*fft_height_ + y + pad_h)*fft_width_ + x + pad_w] =
-                map_in[y*width + x];
-          }
+          memcpy(fft_map_in_real_ + (c*fft_height_ + y + pad_h)*fft_width_ + pad_w, map_in + y*width, width*sizeof(float));
         }
       }
 
@@ -226,7 +262,7 @@ void FFTLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
               CblasRowMajor, CblasNoTrans,
               this->conv_out_channels_/this->group_, this->conv_in_channels_/this->group_,
               &alpha,
-              ((const std::complex<float> *)fft_weight_.cpu_data()) + (j*this->group_ + g)*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_),
+              ((const std::complex<float> *)fft_weight_conj_.cpu_data()) + (j*this->group_ + g)*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_),
               this->conv_in_channels_/this->group_,
               fft_map_in_complex_ + g*this->conv_in_channels_/this->group_*fft_map_complex_size_ + j, fft_map_complex_size_,
               &beta,
@@ -241,15 +277,12 @@ void FFTLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
       float ifft_scale = 1./((float) fft_map_real_size_);
       for (int c = 0; c < this->conv_out_channels_; c++) {
         float *map_out = top_data + n*this->top_dim_ + c*output_h*output_w;
-        int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
 
         // post-process: map_out_real --> map_out
-        for (int y = 0; y < output_h; y++) {
-          for (int x = 0; x < output_w; x++) {
-            if ((y < fft_height_) && (x < fft_width_)) {
-                map_out[y*output_w + x] =
-                  ifft_scale*fft_map_out_real_[(c*fft_height_ + y)*fft_width_ + x];
-            }
+        for (int y = 0; y < std::min(output_h, fft_height_); y++) {
+          for (int x = 0; x < std::min(output_w, fft_width_); x++) {
+            map_out[y*output_w + x] =
+              ifft_scale*fft_map_out_real_[(c*fft_height_ + y)*fft_width_ + x];
           }
         }
       } // for each output channel
@@ -275,18 +308,24 @@ void FFTLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void FFTLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
-  const Dtype* weight = this->blobs_[0]->cpu_data();
-  Dtype* weight_diff = this->blobs_[0]->mutable_cpu_diff();
+template <>
+void FFTLayer<double>::Backward_cpu(const vector<Blob<double>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<double>*>& bottom) {
+  NOT_IMPLEMENTED;
+}
+
+template <>
+void FFTLayer<float>::Backward_cpu(const vector<Blob<float>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<float>*>& bottom) {
+  const float* weight = this->blobs_[0]->cpu_data();
+  float* weight_diff = this->blobs_[0]->mutable_cpu_diff();
   for (int i = 0; i < top.size(); ++i) {
-    const Dtype* top_diff = top[i]->cpu_diff();
-    const Dtype* bottom_data = bottom[i]->cpu_data();
-    Dtype* bottom_diff = bottom[i]->mutable_cpu_diff();
+    const float* top_diff = top[i]->cpu_diff();
+    const float* bottom_data = bottom[i]->cpu_data();
+    float* bottom_diff = bottom[i]->mutable_cpu_diff();
     // Bias gradient, if necessary.
     if (this->bias_term_ && this->param_propagate_down_[1]) {
-      Dtype* bias_diff = this->blobs_[1]->mutable_cpu_diff();
+      float* bias_diff = this->blobs_[1]->mutable_cpu_diff();
       for (int n = 0; n < this->num_; ++n) {
         this->backward_cpu_bias(bias_diff, top_diff + n * this->top_dim_);
       }
@@ -300,8 +339,56 @@ void FFTLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
         }
         // gradient w.r.t. bottom data, if necessary.
         if (propagate_down[i]) {
-          this->backward_cpu_gemm(top_diff + n * this->top_dim_, weight,
-              bottom_diff + n * this->bottom_dim_);
+//          this->backward_cpu_gemm(top_diff + n * this->top_dim_, weight,
+//              bottom_diff + n * this->bottom_dim_);
+
+          const int output_h = this->output_shape_[0], output_w = this->output_shape_[1];
+          for (int c = 0; c < this->conv_out_channels_; ++c) {
+            int pad_h = this->pad_.cpu_data()[0], pad_w = this->pad_.cpu_data()[1];
+
+            const float *map_in = top_diff + n*this->top_dim_ + c*output_h*output_w;
+
+            // 0-padding: map_in --> fft_map_in_real_
+            caffe_memset(fft_map_real_size_*sizeof(float), 0, fft_map_in_real_);
+            for (int y = 0; y < output_h; ++y) {
+              memcpy(fft_map_in_real_ + (c*fft_height_ + y)*fft_width_, map_in + y*output_w, output_w*sizeof(float));
+            }
+          }
+
+          // FFT: fft_map_in_real_ --> fft_map_in_complex_
+          caffe_cpu_fft_execute<float>(fft_back_handle_);
+
+          std::complex<float> alpha = 1, beta = 0;
+          for (int j = 0; j < fft_map_complex_size_; ++j) {
+            for (int g = 0; g < this->group_; ++g) {
+              cblas_cgemv(
+                  CblasRowMajor, CblasNoTrans,
+                  this->conv_in_channels_/this->group_, this->conv_out_channels_/this->group_,
+                  &alpha,
+                  ((const std::complex<float> *)fft_weight_.cpu_data()) + (j*this->group_ + g)*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_),
+                  this->conv_out_channels_/this->group_,
+                  fft_map_in_complex_ + g*this->conv_out_channels_/this->group_*fft_map_complex_size_ + j, fft_map_complex_size_,
+                  &beta,
+                  fft_map_out_complex_ + g*this->conv_in_channels_/this->group_*fft_map_complex_size_ + j, fft_map_complex_size_);
+            }
+          }
+
+          caffe_cpu_fft_execute<float>(ifft_back_handle_);
+
+          // IFFT: map_out_complex --> map_out_real
+          float ifft_scale = 1./((float)fft_map_real_size_);
+          for (int c = 0; c < this->conv_in_channels_; c++) {
+            int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
+            float *map_out = bottom_diff + n*this->bottom_dim_ + c*height*width;
+
+            // post-process: map_out_real --> map_out
+            for (int y = 0; y < height; y++) {
+              for (int x = 0; x < width; x++) {
+                map_out[y*width + x] =
+                  ifft_scale*fft_map_out_real_[(c*fft_height_ + y)*fft_width_ + x];
+              }
+            }
+          } // for each output channel
         }
       }
     }

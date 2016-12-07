@@ -81,11 +81,12 @@ class FFTLayer : public BaseConvolutionLayer<Dtype> {
   virtual inline bool reverse_dimensions() { return false; }
   virtual void compute_output_shape();
 
-  Blob<Dtype> fft_weight_;
+  Blob<Dtype> fft_weight_, fft_weight_conj_;
 
   int fft_height_, fft_width_;
 
   void *fft_handle_, *ifft_handle_;
+  void *fft_back_handle_, *ifft_back_handle_;
 
   Dtype *fft_map_in_real_, *fft_map_out_real_;
   std::complex<Dtype> *fft_map_in_complex_, *fft_map_out_complex_;
