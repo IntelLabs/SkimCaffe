@@ -32,6 +32,30 @@ void caffe_cpu_gemm<double>(const CBLAS_TRANSPOSE TransA,
       ldb, beta, C, N);
 }
 
+template<typename Dtype>
+void caffe_cpu_gemm(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const Dtype alpha, const Dtype* A, const Dtype* B, const Dtype beta,
+    Dtype* C)
+{
+  NOT_IMPLEMENTED;
+}
+
+template void caffe_cpu_gemm<int>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const int alpha, const int* A, const int* B, const int beta,
+    int* C);
+
+template void caffe_cpu_gemm<unsigned int>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const unsigned int alpha, const unsigned int* A, const unsigned int* B, const unsigned int beta,
+    unsigned int* C);
+
+template void caffe_cpu_gemm<long>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const long alpha, const long* A, const long* B, const long beta,
+    long* C);
+
 template <>
 void caffe_cpu_cblas_gemm<float>(const int M, const int N, const int K,
     const float alpha, const float* A, const int lda, const float* B, const int ldb, const float beta,
@@ -544,6 +568,16 @@ template <>
 double caffe_cpu_asum<double>(const int n, const double* x) {
   return cblas_dasum(n, x, 1);
 }
+
+template <typename Dtype>
+Dtype caffe_cpu_asum(const int n, const Dtype* x) {
+  NOT_IMPLEMENTED;
+  return (Dtype)0;
+}
+
+template int caffe_cpu_asum<int>(const int n, const int* x);
+template unsigned int caffe_cpu_asum<unsigned int>(const int n, const unsigned int* x);
+template long caffe_cpu_asum<long>(const int n, const long* x);
 
 template <>
 void caffe_cpu_asum_along_col_row<float>(const int M, const int N, const float* X, float* y, bool dimen){

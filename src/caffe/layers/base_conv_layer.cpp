@@ -92,7 +92,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 	CHECK_EQ(this->blobs_[0]->num_axes(),4);//caffe now supports any dimension
 	//is_sparse_format_weights_ = false;
 	const LayerParameter& layerparam = this->layer_param();
-	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<Dtype>::getMeasureThreshold());
+	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<float>::getMeasureThreshold());
 
 	ConvolutionParameter conv_param = layerparam.convolution_param();
 	if (conv_param.dump_parameter()) {
@@ -415,10 +415,10 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 	//disconnect connections
 	if( layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_ELTWISE ){
 		LOG(INFO)<<"all zero weights of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE, Solver<Dtype>::getPruneThreshold());
+		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE, Solver<float>::getPruneThreshold());
 	}else if(layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_GRPWISE){
 		LOG(INFO)<<"weights lying in all-zero groups of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<Dtype>::getPruneThreshold(), group_);
+		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<float>::getPruneThreshold(), group_);
 	}
 
 }
@@ -878,6 +878,10 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 		  const int *rowptr = weight_rowptr_[g];
 		  const float *values = weight_values_[g];
 		  const int *colidx = weight_colidx_[g];
+
+		  int ncolblock = weight_rowptr_blocked_.size()/group_;
+      int nnz = rowptr[M];
+      int col_major_ic_block = get_col_major_ic_block(nnz, M, conv_in_channels_/group_);
 
 		  if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5 && dilation_h == 1 && dilation_w == 1) {
 		    // 2nd layer of AlexNet fused with bias term and pooling

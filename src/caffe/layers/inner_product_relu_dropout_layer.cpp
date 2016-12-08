@@ -4,6 +4,7 @@
 #include <omp.h>
 
 #include "caffe/filler.hpp"
+#include "caffe/solver.hpp"
 #include "caffe/layers/inner_product_relu_dropout_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/spgemm.hpp"
@@ -63,7 +64,7 @@ static int col_block_size = 128;
 template<>
 void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	const LayerParameter& layerparam = this->layer_param();
-	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity() << " transpose " << transpose_;
+	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<float>::getMeasureThreshold()) << " transpose " << transpose_;
 
 	if (layerparam.inner_product_param().dump_parameter()) {
 	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
@@ -149,10 +150,10 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	//disconnect connections
 	if( layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_ELTWISE ){
 		LOG(INFO)<<"all zero weights of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE);
+		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE, Solver<float>::getPruneThreshold());
 	}else if(layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_GRPWISE){
 		LOG(INFO)<<"weights lying in all-zero groups of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE);
+		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<float>::getPruneThreshold());
 	}
 }
 

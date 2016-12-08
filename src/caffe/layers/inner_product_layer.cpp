@@ -57,7 +57,7 @@ static int col_block_size = 128;
 template<>
 void InnerProductLayer<float>::WeightAlign(){
 	const LayerParameter& layerparam = this->layer_param();
-	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<Dtype>::getMeasureThreshold()) << " transpose " << transpose_;
+	LOG(INFO)<<"layer\t"<<layerparam.name()<<"\t"<<"has sparsity of "<< this->blobs_[0]->GetSparsity(Solver<float>::getMeasureThreshold()) << " transpose " << transpose_;
 
 	if (layerparam.inner_product_param().dump_parameter()) {
 	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
@@ -113,10 +113,10 @@ void InnerProductLayer<float>::WeightAlign(){
 	//disconnect connections
 	if( layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_ELTWISE ){
 		LOG(INFO)<<"all zero weights of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE, Solver<Dtype>::getPruneThreshold());
+		this->blobs_[0]->Disconnect(Blob<float>::ELTWISE, Solver<float>::getPruneThreshold());
 	}else if(layerparam.connectivity_mode() == caffe::LayerParameter_ConnectivityMode_DISCONNECTED_GRPWISE){
 		LOG(INFO)<<"weights lying in all-zero groups of "<<layerparam.name()<<" are frozen";
-		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<Dtype>::getPruneThreshold());
+		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<float>::getPruneThreshold());
 	}
 }
 
