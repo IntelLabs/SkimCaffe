@@ -644,10 +644,9 @@ message ConvolutionParameter {
   // the method of convolutional computation
   enum ConvMode {
     LOWERED_GEMM = 0;   //gemm on lowered tensors
-    LOWERED_CSRMM = 1;  //sparse mm by CSR format on lowered tensors
-    LOWERED_CCNMM = 2;  //removing all-zero rows & columns and ConCateNating remaining ones, then gemm on lowered tensors
-    DIRECT_SCONV = 3;  //direct convolution on tensors without lowering, harnessing sparsity
-    DIRECT_DCONV = 4;  //direct convolution on tensors without lowering, dense format
+    LOWERED_CCNMM = 1;  //removing all-zero rows & columns and ConCateNating remaining ones, then gemm on lowered tensors
+    DIRECT_SCONV = 2;  //direct convolution on tensors without lowering, harnessing sparsity
+    DIRECT_DCONV = 3;  //direct convolution on tensors without lowering, dense format
   }
   optional ConvMode conv_mode = 21 [default = LOWERED_GEMM];
   optional bool dump_parameter = 22 [default = false];

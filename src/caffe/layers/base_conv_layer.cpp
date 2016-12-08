@@ -124,30 +124,6 @@ void BaseConvolutionLayer<float>::WeightAlign(){
   }
 
 	switch(conv_param.conv_mode()){
-		case caffe::ConvolutionParameter_ConvMode_LOWERED_CSRMM:
-			LOG(INFO)<<"ConvolutionParameter_ConvMode_LOWERED_CSRMM";
-
-      weight_rowptr_.resize(group_);
-      weight_colidx_.resize(group_);
-      weight_values_.resize(group_);
-
-			for (int g = 0; g < group_; ++g) {
-        int nnz = 0;
-        for (int i = 0; i < M*N; ++i) {
-          if (this->blobs_[0]->cpu_data()[i] != 0) ++nnz;
-        }
-
-        posix_memalign((void **)&weight_rowptr_[g], 4096, sizeof(int)*(M + 1));
-        posix_memalign((void **)&weight_colidx_[g], 4096, sizeof(int)*nnz);
-        posix_memalign((void **)&weight_values_[g], 4096, sizeof(float)*nnz);
-
-				caffe_cpu_sparse_dense2csr(M, N,
-						this->blobs_[0]->mutable_cpu_data() + weight_offset * g,
-						weight_values_[g],
-						weight_colidx_[g],
-						weight_rowptr_[g]);
-			}
-			break;
 		case caffe::ConvolutionParameter_ConvMode_LOWERED_CCNMM:
 			LOG(INFO)<<"ConvolutionParameter_ConvMode_LOWERED_CCNMM";
 			for (int g = 0; g < group_; ++g) {
@@ -823,18 +799,6 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 	  const int row_offset = conv_out_channels_ /group_ + 1;
 	  int left_cols = 0;
 	  switch(this->layer_param_.convolution_param().conv_mode()){
-	  case caffe::ConvolutionParameter_ConvMode_LOWERED_CSRMM :
-		  caffe_cpu_sparse_mmcsr(M,
-				  N,
-				  K,
-				  (float)1.,
-				  weight_values_[g],
-				  weight_colidx_[g],
-				  weight_rowptr_[g],
-				  weight_rowptr_[g] + 1,
-				  col_buff + col_offset_ * g,
-				  (float)0.,output + output_offset_ * g);
-		  break;
 	  case caffe::ConvolutionParameter_ConvMode_LOWERED_CCNMM :
 		  left_cols = left_columns_[g];
 		  caffe_cpu_cblas_gemm(conv_out_channels_ /
