@@ -1,5 +1,15 @@
 ## SkimCaffe Specific Description
 
+A Caffe branch for training sparse CNN that provides 80-95% sparsity in
+convolution and fully-connected layers (tested with AlexNet and GoogLeNet).
+Our optimized sparse convolution and sparse-matrix-times-dense-matrix routines
+effectively take advantage of the sparsity achieving ~3x speedups with 90%
+sparsity (our sparse convolution routine will be migrated to libxsmm library so
+that it can be also used by other frameworks like TensorFlow).
+SkimCaffe also has experimental features of getting sparsity in Winograd
+(L1_Winograd regularization) and we have prelimiary results for AlexNet.
+Please let us know if you're interested in this experimental feature.
+
 SkimCaffe has been only tested with bvlc_reference_caffenet bvlc_googlenet, and
 there could be places where things do not work if you use other networks.
 Please let us know if you encounter such issues and share .prototxt of the
