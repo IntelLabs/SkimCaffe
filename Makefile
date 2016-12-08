@@ -381,7 +381,7 @@ ifeq ($(BLAS), mkl)
 	LIBRARIES += mkl_rt
 	COMMON_FLAGS += -DUSE_MKL
 	MKL_DIR ?= /opt/intel/mkl
-	BLAS_INCLUDE ?= $(MKL_DIR)/include
+	BLAS_INCLUDE ?= $(MKL_DIR)/include $(MKL_DIR)/include/fftw
 	BLAS_LIB ?= $(MKL_DIR)/lib $(MKL_DIR)/lib/intel64
 else ifeq ($(BLAS), open)
 	# OpenBLAS
