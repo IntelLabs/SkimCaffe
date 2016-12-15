@@ -4,7 +4,7 @@
 #include "caffe/solver.hpp"
 #include "caffe/layers/inner_product_layer.hpp"
 #include "caffe/util/math_functions.hpp"
-#include "caffe/util/spgemm.hpp"
+#include "caffe/util/csrmm.hpp"
 
 extern std::map<std::string, unsigned long long> total_conv_cycles;
 extern std::map<std::string, double> total_conv_flops;

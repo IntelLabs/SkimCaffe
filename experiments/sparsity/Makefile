@@ -50,10 +50,12 @@ else
   NVCC_FLAGS += -O3
 endif
 
+all: sconv_test fc_test
+
 sconv_test: sconv_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-fc_test: fc_test.cpp ../../include/caffe/util/spgemm.hpp
+fc_test: fc_test.cpp ../../include/caffe/util/csrmm.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 csrmm_test: csrmm_test.cpp

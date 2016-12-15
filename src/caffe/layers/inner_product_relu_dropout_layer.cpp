@@ -7,7 +7,7 @@
 #include "caffe/solver.hpp"
 #include "caffe/layers/inner_product_relu_dropout_layer.hpp"
 #include "caffe/util/math_functions.hpp"
-#include "caffe/util/spgemm.hpp"
+#include "caffe/util/csrmm.hpp"
 
 extern std::map<std::string, unsigned long long> total_conv_cycles;
 extern std::map<std::string, double> total_conv_flops;
@@ -74,11 +74,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
 	posix_memalign((void **)&weight_values_, 4096, sizeof(float)*K_*N_);
 
-	CSR csr;
-	csr.values = weight_values_;
-	csr.rowptr = weight_i_;
-	csr.colidx = weight_j_;
-
   caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode) {
@@ -125,9 +120,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
           }
         }
       }
-
-      csr.m = N_;
-      csr.n = K_;
     }
     else {
       LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";

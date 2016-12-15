@@ -13,10 +13,10 @@
 #include <cstring>
 #include <cmath>
 
-#include "../../include/caffe/util/conv.hpp"
 #define CSRMM_REARRANGE_B
-#include "../../include/caffe/util/spgemm.hpp"
+#include "../../include/caffe/util/csrmm.hpp"
 #include "SpMP/CSR.hpp"
+#include "SpMP/synk/barrier.hpp"
 #include <mkl.h>
 
 #ifdef SEP
@@ -46,11 +46,11 @@ int flop_cnt = 0;
 int main(int argc, const char *argv[])
 {
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s matrix_in_matrix_market_format\n", argv[0]);
+    fprintf(stderr, "Usage: %s matrix_in_matrix_market_format [N default=256] [A_col_block_size default=256]\n", argv[0]);
     return -1;
   }
 
-  const int NBATCH = 256;
+  int nbatch = argc > 2 ? atoi(argv[2]) : 256;
 
   int nthreads = omp_get_max_threads();
 
@@ -58,7 +58,7 @@ int main(int argc, const char *argv[])
   printf("freq = %g\n", cpu_freq);
 
   SpMP::CSR *A = new SpMP::CSR(argv[1]);
-  printf("nnz_proportion = %g\n", (double)A->getNnz()/A->m/A->n);
+  printf("m = %d n = %d k = %d nnz_proportion = %g\n", A->m, nbatch, A->n, (double)A->getNnz()/A->m/A->n);
 
 #if defined(SNIPER) || defined(SDE)
   int NOUT = A->m/32; // scale down to 1 tile
@@ -69,46 +69,15 @@ int main(int argc, const char *argv[])
 #endif
   int NIN = A->n;
 
-//#define B_DECOMPOSITION // FIXME: currently not supported!
-
-#ifdef B_DECOMPOSITION
-  typedef int idx_t;
-#ifdef __AVX512F__
-  int num_of_B_col_partitions = NBATCH/(4*VLEN);
-#else
-  int num_of_B_col_partitions = NBATCH/(8*VLEN);
-#endif
-  assert(nthreads%num_of_B_col_partitions == 0);
-  int num_of_B_row_partitions = nthreads/num_of_B_col_partitions;
-    // output matrix C will be replicated by num_of_B_row_blocks times
-  printf(
-      "num_of_B_row_partitions = %d, num_of_B_col_partitions = %d\n",
-      num_of_B_row_partitions, num_of_B_col_partitions);
-  int num_of_A_col_blocks = num_of_B_row_partitions;
-  int num_of_A_row_blocks = 1;
-
-  for (int i = 0; i < num_of_B_col_partitions; ++i) {
-    barriers[i] = new synk::Barrier(num_of_B_row_partitions, 1);
-  }
-#pragma omp parallel
-  {
-    assert(omp_get_num_threads() == nthreads);
-
-    int tid = omp_get_thread_num();
-    int gid = tid/num_of_B_row_partitions;
-    int tid_in_group = tid%num_of_B_row_partitions;
-
-    barriers[gid]->init(tid_in_group);
-  }
-#else
   // C decomposition
   typedef int idx_t;
 
-  int A_col_block_size = argc > 2 ? atoi(argv[2]) : 256;
-  int num_of_A_col_blocks = NIN/A_col_block_size;
+  int A_col_block_size = argc > 3 ? atoi(argv[3]) : 256;
+  int num_of_A_col_blocks = (NIN + A_col_block_size - 1)/A_col_block_size;
 
-  int num_of_C_col_partitions = NBATCH/(VLEN*CSRMM_REG_BLOCK_SIZE);
-    // AVX512: 256/(16*4) = 4, AVX2: 256/(8*8) = 4, SSE: 64/(4*8) = 2
+  int C_col_block_size = VLEN*CSRMM_REG_BLOCK_SIZE;
+  int num_of_C_col_partitions = (nbatch + C_col_block_size - 1)/C_col_block_size;
+    // C col block size -> AVX512: 256/(16*4) = 4, AVX2: 256/(8*8) = 4, SSE: 64/(4*8) = 2
   if (nthreads%num_of_C_col_partitions != 0) {
     fprintf(stderr, "num_of_C_col_partitions %d should divide # of threads %d\n", num_of_C_col_partitions, nthreads);
     return -1;
@@ -117,7 +86,6 @@ int main(int argc, const char *argv[])
 
   int num_of_A_row_blocks = num_of_C_row_partitions;
   printf("num_of_A_col_blocks = %d, num_of_C_row_partitions = %d, num_of_C_col_partitions = %d\n", num_of_A_col_blocks, num_of_C_row_partitions, num_of_C_col_partitions);
-#endif
 
   int nnz = A->getNnz();
 
@@ -154,50 +122,53 @@ int main(int argc, const char *argv[])
               // When we have enough bits for column indices,
               // we pre-multiply it with # of columns of matrix B
 #ifdef CSRMM_REARRANGE_B
-              weight_j_blocked_[nnz] = NBATCH/num_of_C_col_partitions*c;
+              weight_j_blocked_[nnz] = nbatch/num_of_C_col_partitions*c;
 #else
-              weight_j_blocked_[nnz] = NBATCH*c;
+              weight_j_blocked_[nnz] = nbatch*c;
 #endif
             }
             weight_values_blocked_[nnz] = A->values[j];
             ++nnz;
           }
         }
-        weight_i_blocked_[num_of_A_col_blocks*i_begin + col_block*(i_end - i_begin) + (i - i_begin) + 1] = nnz;
+        int rowptr_idx = num_of_A_col_blocks*i_begin + col_block*(i_end - i_begin) + (i - i_begin) + 1;
+        assert(rowptr_idx <= NOUT*num_of_A_col_blocks);
+        weight_i_blocked_[rowptr_idx] = nnz;
       }
     } // for each col block
   } // for each row block
   assert(nnz == A->getNnz());
+  assert(weight_i_blocked_[NOUT*num_of_A_col_blocks] == nnz);
 
-  size_t input_size = sizeof(float)*NBATCH*NIN;
+  size_t input_size = sizeof(float)*NIN*nbatch;
   float *input = (float *)_mm_malloc(input_size, 4096);
-//  float *input = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
+//  float *input = (float *)malloc_huge_pages(sizeof(float)*nbatch*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
   for (int i = 0; i < input_size/sizeof(float); ++i) {
     input[i] = i%123;
   }
 
   // rearrange input
   float *input_rearranged = (float *)_mm_malloc(input_size*num_of_C_row_partitions, 4096);
-  int col_block_size = NBATCH/num_of_C_col_partitions;
+  int col_block_size = (nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
   for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
     for (int i = 0; i < NIN; ++i) {
       for (int j = 0; j < col_block_size; ++j) {
 #ifdef CSRMM_REPLICATE_B
         for (int row_block = 0; row_block < num_of_C_row_partitions; ++row_block) {
           input_rearranged[((col_block*num_of_C_row_partitions + row_block)*NIN + i)*col_block_size + j] =
-              input[i*NBATCH + col_block*col_block_size + j];
+              input[i*nbatch + col_block*col_block_size + j];
         }
 #else
         input_rearranged[(col_block*NIN + i)*col_block_size + j] =
-            input[i*NBATCH + col_block*col_block_size + j];
+            input[i*nbatch + col_block*col_block_size + j];
 #endif
       }
     }
   }
 
-  size_t output_size = sizeof(float)*NOUT*NIN;
+  size_t output_size = sizeof(float)*nthreads*((NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions)*(nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
   float *output = (float *)_mm_malloc(output_size, 4096);
-//  float *output = (float *)malloc_huge_pages(sizeof(float)*NBATCH*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
+//  float *output = (float *)malloc_huge_pages(sizeof(float)*nbatch*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
   memset((void *)output, 0, output_size);
 
   float *output_scratch = (float *)_mm_malloc(output_size*nthreads, 4096);
@@ -230,7 +201,7 @@ int main(int argc, const char *argv[])
 #endif
 #endif
 
-  printf("REPEAT = %d, NBATCH = %d\n", REPEAT, NBATCH);
+  printf("REPEAT = %d, nbatch = %d\n", REPEAT, nbatch);
 
 #ifdef SEP
   VTResumeSampling();
@@ -258,17 +229,6 @@ int main(int argc, const char *argv[])
 #endif
     }
 
-#ifdef B_DECOMPOSITION
-    // 2D decomposition of B
-    csrmm_fused_B_decomposed(
-        weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        input,
-        output,
-        NOUT, NBATCH, NIN,
-        bias,
-        output_scratch,
-        num_of_B_row_partitions, num_of_B_col_partitions);
-#else
     // 2D decomposition of C
     csrmm_fused_C_decomposed(
         weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
@@ -278,11 +238,10 @@ int main(int argc, const char *argv[])
         input,
 #endif
         output,
-        NOUT, NBATCH, NIN,
+        NOUT, nbatch, NIN,
         bias,
         num_of_C_col_partitions,
         num_of_A_col_blocks);
-#endif
 
     if (j == REPEAT - 1) {
 #ifdef SNIPER
@@ -310,34 +269,34 @@ int main(int argc, const char *argv[])
   // Re-arrange output matrix C
   // In csrmm_fused_C_decomposed, each thread writes to the contiguous locations for spatial locality
   // which is not necessarily match with the original layout of output matrix C.
-  float *temp_output = new float[NOUT*NIN];
+  float *temp_output = new float[NOUT*nbatch];
   int i_per_block = (NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions;
-  int j_per_block = (NBATCH + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
+  int j_per_block = (nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
 #pragma omp parallel for
   for (int row_block = 0; row_block < num_of_C_row_partitions; ++row_block) {
     int i_begin = std::min(i_per_block*row_block, NOUT);
     int i_end = std::min(i_begin + i_per_block, NOUT);
 
     for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
-      int j_begin = std::min(j_per_block*col_block, NBATCH);
-      int j_end = std::min(j_begin + j_per_block, NBATCH);
+      int j_begin = std::min(j_per_block*col_block, nbatch);
+      int j_end = std::min(j_begin + j_per_block, nbatch);
 
       for (int i = i_begin; i < i_end; ++i) {
         for (int j = j_begin; j < j_end; ++j) {
-          temp_output[i*NBATCH + j] =
+          temp_output[i*nbatch + j] =
               output[((row_block*num_of_C_col_partitions + col_block)*i_per_block + i - i_begin)*j_per_block + j - j_begin];
         }
       }
     }
   }
-  memcpy(output, temp_output, sizeof(float)*NOUT*NIN);
+  memcpy(output, temp_output, sizeof(float)*NOUT*nbatch);
   delete[] temp_output;
 
-  unsigned long long max_spmdm_cycles = 0, sum_spmdm_cycles = 0;
+  unsigned long long max_csrmm_cycles = 0, sum_csrmm_cycles = 0;
   unsigned long long max_reduce_cycles = 0, sum_reduce_cycles = 0;
   for (int tid = 0; tid < nthreads; ++tid) {
-    max_spmdm_cycles = std::max(max_spmdm_cycles, conv_cycles_of_this_batch[tid*16]);
-    sum_spmdm_cycles += conv_cycles_of_this_batch[tid*16];
+    max_csrmm_cycles = std::max(max_csrmm_cycles, conv_cycles_of_this_batch[tid*16]);
+    sum_csrmm_cycles += conv_cycles_of_this_batch[tid*16];
 
     max_reduce_cycles = std::max(max_reduce_cycles, reduce_cycles[tid*16]);
     sum_reduce_cycles += reduce_cycles[tid*16];
@@ -353,10 +312,10 @@ int main(int argc, const char *argv[])
     temp_values[i] = A->values[i];
   }
   float *output_ref = new float[output_size/sizeof(float)];
-  mkl_scsrmm(&transa, &NOUT, &NBATCH, &NIN, &alpha, matdescra, temp_values, A->colidx, A->rowptr, A->rowptr + 1, input, &NBATCH, &beta, output_ref, &NBATCH);
+  mkl_scsrmm(&transa, &NOUT, &nbatch, &NIN, &alpha, matdescra, temp_values, A->colidx, A->rowptr, A->rowptr + 1, input, &nbatch, &beta, output_ref, &nbatch);
   for (int i = 0; i < NOUT; ++i) {
-    for (int j = 0; j < NBATCH; ++j) {
-      output_ref[i*NBATCH + j] = std::max<float>(output_ref[i*NBATCH + j] + bias[i], 0);
+    for (int j = 0; j < nbatch; ++j) {
+      output_ref[i*nbatch + j] = std::max<float>(output_ref[i*nbatch + j] + bias[i], 0);
     }
   }
 
@@ -366,17 +325,17 @@ int main(int argc, const char *argv[])
   for (int j = A->rowptr[ROW_TO_DEBUG]; j < A->rowptr[ROW_TO_DEBUG + 1]; ++j) {
     float w = temp_values[j];
     int off = A->colidx[j];
-    printf(" + %g*%d:%g", w, off, input[off*NBATCH + COL_TO_DEBUG]);
-    sum += w*input[off*NBATCH + COL_TO_DEBUG];
+    printf(" + %g*%d:%g", w, off, input[off*nbatch + COL_TO_DEBUG]);
+    sum += w*input[off*nbatch + COL_TO_DEBUG];
   }
   printf(" = %g\n", sum);
 #endif
 
   for (int i = 0; i < NOUT; ++i) {
-    for (int j = 0; j < NBATCH; ++j) {
-      float expected = output_ref[i*NBATCH + j];
-      float actual = output[i*NBATCH + j];
-      if (fabs(expected - actual)/fabs(expected) > 1e-1) {
+    for (int j = 0; j < nbatch; ++j) {
+      float expected = output_ref[i*nbatch + j];
+      float actual = output[i*nbatch + j];
+      if (fabs(expected - actual)/fabs(expected) > 1e-3) {
         printf("(%d, %d) expected %g actual %g\n", i, j, expected, actual);
         return -1;
       }
@@ -388,8 +347,8 @@ int main(int argc, const char *argv[])
 
   double flops = (double)NOUT*NIN*2;
   printf("mflops-per-file %g\n", flops/1e6);
-  printf("effective-GF/s %g %g\n", flops*REPEAT*NBATCH/t/1e9, flops*NBATCH/(max_spmdm_cycles/cpu_freq)/1e6);
-  printf("wall_clock_time = %g, max_spmdm_time = %g, avg_spmdm_time = %g, max_reduce_time = %g, avx_reduce_time = %g\n", t/REPEAT, max_spmdm_cycles/cpu_freq, (double)sum_spmdm_cycles/nthreads/cpu_freq, max_reduce_cycles/cpu_freq, (double)sum_reduce_cycles/nthreads/cpu_freq);
+  printf("effective-GF/s %g %g\n", flops*REPEAT*nbatch/t/1e9, flops*nbatch/(max_csrmm_cycles/cpu_freq)/1e6);
+  printf("wall_clock_time = %g, max_csrmm_time = %g, avg_csrmm_time = %g, max_reduce_time = %g, avx_reduce_time = %g\n", t/REPEAT, max_csrmm_cycles/cpu_freq, (double)sum_csrmm_cycles/nthreads/cpu_freq, max_reduce_cycles/cpu_freq, (double)sum_reduce_cycles/nthreads/cpu_freq);
 
   return 0;
 }
