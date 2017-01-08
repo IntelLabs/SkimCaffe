@@ -49,6 +49,7 @@ void WinogradLayer<Dtype>::WeightAlign() {
 
   // temp_ is stored in transposed form
   vector<int> shape;
+  shape.push_back(this->num_);
   shape.push_back(tile_h_in_*tile_w_in_);
   shape.push_back(std::max(this->conv_in_channels_, this->conv_out_channels_));
   shape.push_back(ntiles_h_*ntiles_w_);
@@ -74,6 +75,38 @@ void WinogradLayer<Dtype>::WeightAlign() {
       (Dtype)1, GKronG->get()->cpu_data(), weight_orig,
       (Dtype)0, this->blobs_[0]->mutable_cpu_data());
   delete[] weight_orig;
+
+  // create arrays to pointers to prepare for cuda batch sgemm
+  shape.clear();
+  shape.push_back(this->num_);
+  shape.push_back(tile_h_in_);
+  shape.push_back(tile_w_in_);
+  shape.push_back(this->group_);
+
+  in_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
+  out_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
+  weight_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
+
+  shape.clear();
+  shape.push_back(tile_h_in_);
+  shape.push_back(tile_w_in_);
+  shape.push_back(this->group_);
+  weight_diff_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
+
+  Dtype **in_ptrs = (Dtype **)in_activation_ptrs_->mutable_cpu_data();
+  Dtype **out_ptrs = (Dtype **)out_activation_ptrs_->mutable_cpu_data();
+
+  for (int n = 0; n < this->num_; ++n) {
+    for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
+      in_ptrs[n*tile_h_in_*tile_w_in_*this->group_ + j] =
+        temp1_.mutable_gpu_data() +
+        (n + j*this->num_)*(this->conv_in_channels_/this->group_)*ntiles_h_*ntiles_w_;
+
+      out_ptrs[n*tile_h_in_*tile_w_in_*this->group_ + j] = 
+        temp2_.mutable_gpu_data() +
+        (n + j*this->num_)*(this->conv_out_channels_/this->group_)*ntiles_h_*ntiles_w_;
+    }
+  }
 }
 
 template<typename Dtype>
@@ -259,6 +292,16 @@ void WinogradLayer<float>::Backward_cpu(const vector<Blob<float>*>& top,
   const float* weight = this->blobs_[0]->cpu_data();
   float* weight_diff = this->blobs_[0]->mutable_cpu_diff();
 
+//  fprintf(stderr, "weight_winograd\n");
+//  for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
+//    for (int n = 0; n < this->conv_out_channels_; ++n) {
+//      for (int c = 0; c < this->conv_in_channels_; ++c) {
+//        fprintf(stderr, "%g ", weight[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+//      }
+//    }
+//    fprintf(stderr, "\n");
+//  }
+
   for (int i = 0; i < top.size(); ++i) {
     const float* top_diff = top[i]->cpu_diff();
     const float* bottom_data = bottom[i]->cpu_data();
@@ -295,6 +338,18 @@ void WinogradLayer<float>::Backward_cpu(const vector<Blob<float>*>& top,
               (float)0, temp2_.mutable_cpu_data());
           // temp_ has (tile_h_in*tile_w_in) x (conv_in_channels) x (ntiles_h*ntiles_w) dimension
 
+          if (false/*n == 0*/) {
+            fprintf(stderr, "weight_diff_winograd0[0]\n");
+            for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
+              for (int n = 0; n < this->conv_out_channels_; ++n) {
+                for (int c = 0; c < this->conv_in_channels_; ++c) {
+                  fprintf(stderr, "%g ", weight_diff[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+                }
+              }
+              fprintf(stderr, "\n");
+            }
+          }
+
           for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
             for (int g = 0; g < this->group_; ++g) {
               caffe_cpu_gemm<float>(CblasNoTrans, CblasTrans,
@@ -306,6 +361,44 @@ void WinogradLayer<float>::Backward_cpu(const vector<Blob<float>*>& top,
             }
           }
           // weight_diff has (tile_h_in*tile_w_in) x (conv_out_channels) x (conv_in_channels/group) dimension
+          
+//          for (int i = 0; i < tile_h_in_*tile_w_in_*this->conv_out_channels_*(this->conv_in_channels_/this->group_); ++i) {
+//            if (isnan(weight_diff[i])) {
+//              ostringstream str;
+//              str << "nan at weight_diff[" << i << "]";
+//              LOG(FATAL) << str.str();
+//            }
+//          }
+
+          if (false/*n == this->num_ - 1*/) {
+            float *temp_weight = new float[this->conv_out_channels_*(this->conv_in_channels_/this->group_)*kernel_h*kernel_w];
+
+            caffe_cpu_gemm<float>(CblasTrans, CblasNoTrans,
+                this->conv_out_channels_*(this->conv_in_channels_/this->group_), kernel_h*kernel_w, tile_h_in_*tile_w_in_,
+                (float)1, weight_diff, GKronG->get()->cpu_data(),
+                (float)0, temp_weight);
+
+            fprintf(stderr, "weight_diff[%d]\n", n);
+            for (int m = 0; m < this->conv_out_channels_; ++m) {
+              for (int c = 0; c < this->conv_in_channels_/this->group_; ++c) {
+                for (int i = 0; i < kernel_h*kernel_w; ++i) {
+                  fprintf(stderr, "%g ", temp_weight[(m*(this->conv_in_channels_/this->group_) + c)*kernel_h*kernel_w + i]);
+                }
+              }
+              fprintf(stderr, "\n");
+            }
+            delete[] temp_weight;
+
+            fprintf(stderr, "weight_diff_winograd[%d]\n", n);
+            for (int n = 0; n < this->conv_out_channels_; ++n) {
+              for (int c = 0; c < this->conv_in_channels_; ++c) {
+                for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
+                  fprintf(stderr, "%g ", weight_diff[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+                }
+              }
+              fprintf(stderr, "\n");
+            }
+          }
         }
 
         // gradient w.r.t. bottom data, if necessary.
@@ -330,6 +423,13 @@ void WinogradLayer<float>::Backward_cpu(const vector<Blob<float>*>& top,
               (float)0, temp1_.mutable_cpu_data());
 
           winograd_input_col2im_cpu(temp1_.cpu_data(), bottom_diff + n*this->bottom_dim_);
+
+//          for (int i = 0; i < this->bottom_dim_; ++i) {
+//            if (isnan(bottom_diff[i])) {
+//              ostringstream str;
+//              str << "nan at bottom_diff[" << n << ", " << i << "]";
+//            }
+//          }
         }
       } // for each image
     }

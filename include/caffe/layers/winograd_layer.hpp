@@ -94,6 +94,10 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   int tile_h_in_, tile_w_in_; /* input tile size */
   int tile_h_out_, tile_w_out_; /* output tile size */
   int ntiles_h_, ntiles_w_; /* number of tiles */
+
+  shared_ptr<Blob<long> >
+    in_activation_ptrs_, out_activation_ptrs_, weight_ptrs_, weight_diff_ptrs_;
+    /** buffer for pointers to be passed to cubalsSgemmBatched */
 };
 
 }  // namespace caffe
