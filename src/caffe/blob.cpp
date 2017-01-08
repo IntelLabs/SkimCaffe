@@ -33,7 +33,9 @@ void Blob<Dtype>::Reshape(const vector<int>& shape) {
   int* shape_data = static_cast<int*>(shape_data_->mutable_cpu_data());
   for (int i = 0; i < shape.size(); ++i) {
     CHECK_GE(shape[i], 0);
-    CHECK_LE(shape[i], INT_MAX / count_) << "blob size exceeds INT_MAX";
+    if (count_ != 0) {
+      CHECK_LE(shape[i], INT_MAX / count_) << "blob size exceeds INT_MAX";
+    }
     count_ *= shape[i];
     shape_[i] = shape[i];
     shape_data[i] = shape[i];
@@ -770,46 +772,218 @@ void Blob<Dtype>::Snapshot(string filename, bool write_diff) const{
 }
 
 template <typename Dtype>
+void Blob<Dtype>:: Write1DTensorToNistMMIO(string filename, const Dtype *data_ptr, int I) {
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_array(&matcode);
+  mm_set_real(&matcode);
+  mm_set_general(&matcode);
+
+  mm_write_banner(fp, matcode);
+  mm_write_mtx_array_size(fp, I, 1);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int i=0; i<I; i++) {
+    fprintf(fp, "%20.16g\n", (double)(*(data_ptr + i)) );
+  }
+
+  fclose(fp);
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: Write2DTensorToNistMMIO(string filename, const Dtype *data_ptr, int I0, int I1) {
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_array(&matcode);
+  mm_set_real(&matcode);
+  mm_set_general(&matcode);
+
+  mm_write_banner(fp, matcode);
+  mm_write_mtx_array_size(fp, I0, I1);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int j=0; j<I1; j++) {
+    for (int i=0; i<I0; i++) {
+      fprintf(fp, "%20.16g\n", (double)(*(data_ptr + i * I1 + j)) );
+    }
+  }
+
+  fclose(fp);
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: Write4DTensorToNistMMIO(string filename, const Dtype *data_ptr, int I0, int I1, int I2, int I3) {
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_array(&matcode);
+  mm_set_real(&matcode);
+  mm_set_general(&matcode);
+
+  mm_write_banner(fp, matcode);
+  mm_write_mtx_array_size(fp, I0, I1*I2*I3);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int c=0; c<I1; c++) {
+    for (int h=0; h<I2; h++) {
+      for (int w=0; w<I3; w++) {
+        for (int n=0; n<I0; n++) { // for each output channel
+          fprintf(fp, "%20.16g\n", (double)(*(data_ptr+((n * I1 + c) * I2 + h) * I3 + w)));
+        }
+      }
+    }
+  }
+
+  fclose(fp);
+}
+
+template <typename Dtype>
 void Blob<Dtype>:: WriteToNistMMIO(string filename) const{
+  if(filename.empty()){
+    filename = shape_string()+".blob";
+  }
+
+  if(num_axes()==4){
+    Write4DTensorToNistMMIO(filename, this->cpu_data(), this->shape(0), this->shape(1), this->shape(2), this->shape(3));
+  }else if(num_axes()==2){
+    Write2DTensorToNistMMIO(filename, this->cpu_data(), this->shape(0), this->shape(1));
+  }else if(num_axes()==1) {
+    Write1DTensorToNistMMIO(filename, this->cpu_data(), this->shape(0));
+  }
+  else {
+    assert(false);
+  }
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: Write2DTensorToNistMMIOSparse(string filename, const Dtype *data_ptr, int I0, int I1)
+{
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_sparse(&matcode);
+  mm_set_real(&matcode);
+
+  mm_write_banner(fp, matcode);
+
+  int nnz = 0;
+  for (int i = 0; i < I0*I1; ++i) {
+    if (data_ptr[i] != 0) ++nnz;
+  }
+
+  mm_write_mtx_crd_size(fp, I0, I1, nnz);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int j=0; j<I1; j++) {
+    for (int i=0; i<I0; i++) {
+      double v = (double)(*(data_ptr + i * I1 + j));
+      if (v != 0) fprintf(fp, "%d %d %20.16g\n", i + 1, j + 1, v);
+    }
+  }
+  
+  fclose(fp);
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: Write3DTensorToNistMMIOSparse(string filename, const Dtype *data_ptr, int I0, int I1, int I2)
+{
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_sparse(&matcode);
+  mm_set_real(&matcode);
+
+  mm_write_banner(fp, matcode);
+
+  int nnz = 0;
+  for (int i = 0; i < I0*I1*I2; ++i) {
+    if (data_ptr[i] != 0) ++nnz;
+  }
+
+  mm_write_mtx_crd_size(fp, I0, I1*I2, nnz);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int h=0; h<I1; h++) {
+    for (int w=0; w<I2; w++) {
+      for (int n=0; n<I0; n++) { // for each channel
+        double v = (double)(*(data_ptr+(n * I1 + h) * I2 + w));
+        if (v != 0) {
+          fprintf(fp, "%d %d %20.16g\n", n + 1, h*I2 + w + 1, v);
+        }
+      }
+    }
+  }
+
+  fclose(fp);
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: Write4DTensorToNistMMIOSparse(string filename, const Dtype *data_ptr, int I0, int I1, int I2, int I3)
+{
+  MM_typecode matcode;
+  FILE * fp = fopen(filename.c_str(), "w+");
+  mm_initialize_typecode(&matcode);
+  mm_set_matrix(&matcode);
+  mm_set_sparse(&matcode);
+  mm_set_real(&matcode);
+
+  mm_write_banner(fp, matcode);
+
+  int nnz = 0;
+  for (int i = 0; i < I0*I1*I2*I3; ++i) {
+    if (data_ptr[i] != 0) ++nnz;
+  }
+
+  mm_write_mtx_crd_size(fp, I0, I1*I2*I3, nnz);
+
+  /* NOTE: matrix market files stored in column-major order by convention, and
+           use 1-based indices, i.e. first element of a vector has index 1, not 0. */
+  for (int c=0; c<I1; c++) { // for each input channel
+    for (int h=0; h<I2; h++) {
+      for (int w=0; w<I3; w++) {
+        for (int n=0; n<I0; n++) { // for each output channel
+          double v = (double)(*(data_ptr+((n * I1 + c) * I2 + h) * I3 + w));
+          if (v != 0) {
+            fprintf(fp, "%d %d %20.16g\n", n + 1, (c*I2 + h)*I3 + w + 1, v);
+          }
+        }
+      }
+    }
+  }
+  
+  fclose(fp);
+}
+
+template <typename Dtype>
+void Blob<Dtype>:: WriteToNistMMIOSparse(string filename) const{
 	if(filename.empty()){
 		filename = shape_string()+".blob";
 	}
-	MM_typecode matcode;
-	FILE * fp = fopen(filename.c_str(), "w+");
-	mm_initialize_typecode(&matcode);
-	mm_set_matrix(&matcode);
-	mm_set_array(&matcode);
-	mm_set_real(&matcode);
-	mm_set_general(&matcode);
 
-	mm_write_banner(fp, matcode);
-	int M = this->shape(0);//column of the stored matrix
-	int N = this->count()/M;
-	mm_write_mtx_array_size(fp, M, N);
-
-	/* NOTE: matrix market files use 1-based indices, i.e. first element
-	 of a vector has index 1, not 0.  */
-	const Dtype * data_ptr = this->cpu_data();
 	if(num_axes()==4){
-		for (int c=0; c<this->shape(1); c++) {
-			for (int h=0; h<this->shape(2); h++) {
-				for (int w=0; w<this->shape(3); w++) {
-					for (int n=0; n<this->shape(0); n++) {
-						fprintf(fp, "%20g\n", (double)(*(data_ptr+((n * this->shape(1) + c) * this->shape(2) + h) * this->shape(3) + w)));
-					}
-				}
-			}
-		}
-	}else if(num_axes()==2){
-		for (int c=0; c<this->shape(1); c++) {
-			for (int n=0; n<this->shape(0); n++) {
-				fprintf(fp, "%20g\n", (double)(*(data_ptr + n * this->shape(1) + c)) );
-			}
-		}
-	}
-
-	fclose(fp);
+	  Write4DTensorToNistMMIOSparse(filename, this->cpu_data(), this->shape(0), this->shape(1), this->shape(2), this->shape(3));
+	}else if(num_axes()==3){
+	  Write3DTensorToNistMMIOSparse(filename, this->cpu_data(), this->shape(0), this->shape(1), this->shape(2));
+  }else if(num_axes()==2){
+    Write2DTensorToNistMMIOSparse(filename, this->cpu_data(), this->shape(0), this->shape(1));
+  }
+  else {
+    assert(false);
+  }
 }
+
 
 INSTANTIATE_CLASS(Blob);
 template class Blob<int>;

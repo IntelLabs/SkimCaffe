@@ -1,6 +1,27 @@
 CXX = icpc
-CXXFLAGS = -fopenmp -DUSE_MKL
-LDFLAGS = -LSpMP -lspmp -mkl
+CXXFLAGS = -fopenmp -DUSE_MKL -I../../src/
+LDFLAGS = -L../../src/SpMP -lspmp -mkl
+
+#SEP = yes
+ifeq (yes, $(SEP))
+  CXXFLAGS += -I$(HOME)/sep/include -DSEP
+  LDFLAGS += -L$(HOME)/sep/bin64 -lprog_api
+endif
+
+#VTUNE = yes
+ifeq (yes, $(VTUNE))
+  CXXFLAGS += -I/swtools/intel/vtune_amplifier_xe/include -DVTUNE
+  LDFLAGS += -L/swtools/intel/vtune_amplifier_xe/lib64 -littnotify
+endif
+
+ifeq (yes, $(SNIPER))
+  CXXFLAGS += -I$(SNIPER_ROOT)/include -DSNIPER -g
+  LDFLAGS += -L$(SNIPER_ROOT)/lib -lsim_api
+endif
+
+ifeq (yes, $(SDE))
+  CXXFLAGS += -DSDE -fasm-blocks
+endif
 
 ifeq (yes, $(LIBXSMM))
   CXXFLAGS += -Ilibxsmm/include
@@ -11,6 +32,8 @@ ifeq (yes, $(DBG))
   CXXFLAGS += -O0 -g
   ifeq (yes, $(KNL))
     CXXFLAGS += -xMIC-AVX512
+  else
+    CXXFLAGS += -xHost
   endif
 else
   CXXFLAGS += -O3 -DNDEBUG -DMKL_DIRECT_CALL
@@ -27,8 +50,22 @@ else
   NVCC_FLAGS += -O3
 endif
 
+all: sconv_test fc_test
+
+sconv_test: sconv_test.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+fc_test: fc_test.cpp ../../include/caffe/util/csrmm.hpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
 csrmm_test: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+sconv_test.s: sconv_test.cpp
+	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)
+
+fc_test.s: fc_test.cpp ../../include/caffe/util/spgemm.hpp
+	$(CXX) $(CXXFLAGS) -o $@ -S $< $(LDFLAGS)
 
 csrmm_test.s: csrmm_test.cpp
 	$(CXX) $(CXXFLAGS) -o $@ -S $^ $(LDFLAGS)
@@ -46,4 +83,4 @@ winograd_test.o: winograd_test.cpp
 	$(CXX) $(CXXFLAGS) -DCUDA -I../../include -I../../.build_release/src/ -I/usr/local/cuda/include -I/usr/local/cudnn/cudnnv4/cuda/include -o $@ -c $^
 
 clean:
-	rm csrmm_test
+	rm -f sconv_test fc_test csrmm_test

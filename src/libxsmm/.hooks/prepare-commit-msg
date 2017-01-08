@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# Appends MSG_TAG to the commit message when no file
+# of the changeset matches any of the PATTERNS.
+#
+HERE=$(cd $(dirname $0); pwd -P)
+if [ "" = "${GIT_DIR}" ]; then
+  GIT_DIR=${HERE}/../.git
+fi
+
+ROOTDIR=$(cd ${GIT_DIR}/..; pwd -P)
+PATTERNS="$(cat ${ROOTDIR}/.codefile)"
+MSG_TAG="[skip ci]"
+MSG_FILE=$1
+MSG_KIND=$2
+
+# disable wildcard expansion
+set -o noglob
+
+if [ "message" = "${MSG_KIND}" ] && [ "" != "${MSG_FILE}" ] && \
+   [ "0" != "$(grep -qs -F "${MSG_TAG}" ${MSG_FILE}; echo $?)" ];
+then
+  for FILE in $(git diff --cached --name-only); do
+    BASENAME=$(basename ${FILE})
+    for PATTERN in ${PATTERNS}; do
+      if [[ ${BASENAME} = ${PATTERN} ]]; then
+        exit 0
+      fi
+    done
+  done
+  echo "${MSG_TAG}" >> ${MSG_FILE}
+fi
+

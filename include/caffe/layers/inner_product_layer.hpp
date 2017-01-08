@@ -18,8 +18,8 @@ namespace caffe {
 template <typename Dtype>
 class InnerProductLayer : public Layer<Dtype> {
  public:
-  explicit InnerProductLayer(const LayerParameter& param)
-      : Layer<Dtype>(param) {}
+  explicit InnerProductLayer(const LayerParameter& param);
+  ~InnerProductLayer();
   virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top);
   virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
@@ -40,12 +40,30 @@ class InnerProductLayer : public Layer<Dtype> {
   virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
       const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
 
-  int M_;
-  int K_;
-  int N_;
+  int M_; ///< batch size ///
+  int K_; ///< input size ///
+  int N_; ///< output size ///
   bool bias_term_;
   Blob<Dtype> bias_multiplier_;
   bool transpose_;  ///< if true, assume transposed weights
+
+  Dtype *bottom_values_;
+  int *bottom_j_;
+  int *bottom_i_;
+
+  Dtype *top_values_;
+  int *top_j_;
+  int *top_i_;
+
+  Dtype *weight_values_;
+  int *weight_j_;
+  int *weight_i_;
+
+  Dtype *weight_values_blocked_;
+  int *weight_j_blocked_;
+  int *weight_i_blocked_;
+
+  Dtype *bottom_transposed_;
 };
 
 }  // namespace caffe

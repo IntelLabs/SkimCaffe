@@ -7,12 +7,10 @@
 #include "caffe/layer.hpp"
 #include "caffe/proto/caffe.pb.h"
 #include "caffe/util/im2col.hpp"
-#ifdef USE_SCONV
-#include <SpMP/CSR.hpp>
-#include <SpMP/reordering/BFSBipartite.hpp>
-#include <SpMP/test/test.hpp>
-#include <SpMP/synk/barrier.hpp>
-#endif
+
+#include "libxsmm.h"
+#define MAX_THREADS (2048)
+
 namespace caffe {
 
 /**
@@ -22,11 +20,8 @@ namespace caffe {
 template <typename Dtype>
 class BaseConvolutionLayer : public Layer<Dtype> {
  public:
-  explicit BaseConvolutionLayer(const LayerParameter& param)
-      : Layer<Dtype>(param) {
-	  //is_sparse_format_weights_ = false;
-	  is_concatenating_weights_features_ = false;
-  }
+  explicit BaseConvolutionLayer(const LayerParameter& param);
+  virtual ~BaseConvolutionLayer();
   virtual void WeightAlign();
   virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top);
@@ -101,6 +96,8 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   bool bias_term_;
   bool is_1x1_;
   bool force_nd_im2col_;
+  int conv_out_channels_;
+  int conv_in_channels_;
 
  protected:
   // wrap im2col/col2im so we don't have to remember the (long) argument lists
@@ -170,8 +167,6 @@ class BaseConvolutionLayer : public Layer<Dtype> {
 
   int num_kernels_im2col_;
   int num_kernels_col2im_;
-  int conv_out_channels_;
-  int conv_in_channels_;
   int conv_out_spatial_dim_;
   int kernel_dim_;
   int col_offset_;
@@ -183,24 +178,44 @@ class BaseConvolutionLayer : public Layer<Dtype> {
   Blob<Dtype> weight_buffer_; //store nonzero weights in the continuous memory
 
   //#define GPU_USE_CUSPARSE
-  #ifdef GPU_USE_CUSPARSE
+#ifdef GPU_USE_CUSPARSE
     Blob<Dtype> nonzero_elements_buffer_;
     Blob<int> nonzero_indices_buffer_;
     Blob<int> index_pointers_buffer_;
     Blob<int> nonzero_per_rowcol_buffer_;
-  #endif
+#endif
 
-    //Three blobs for sparse weight storage in CSC/CSR format
-    //bool is_sparse_format_weights_; //if use the sparse storage format of weights
-    Blob<Dtype> nz_weight_values_;//nonzero elements
-    Blob<int> nz_weight_indices_;//index of nonzero
-    Blob<int> nz_weight_index_pointers_;//pointer(index) of indices
-    bool is_concatenating_weights_features_; //if use concatenation scheme to compress dense weights and features together
-    Blob<int> dense_feature_map_mask_;//to skip all zero rows in col_buffer_
-    Blob<int> col_buf_mask_;
-    vector<int> left_columns_;//the number of left columns of weight matrix for each group
-    Blob<Dtype> squeezed_weight_buffer_;
-    //Blob<Dtype> connectivity_mask_;//0.0 means the connection is off, 1.0 means ON
+  //Three blobs for sparse weight storage in CSC/CSR format
+  //bool is_sparse_format_weights_; //if use the sparse storage format of weights
+//  Blob<Dtype> nz_weight_values_;//nonzero elements
+//  Blob<int> nz_weight_indices_;//index of nonzero
+//  Blob<int> nz_weight_index_pointers_;//pointer(index) of indices
+  bool is_concatenating_weights_features_; //if use concatenation scheme to compress dense weights and features together
+  Blob<int> dense_feature_map_mask_;//to skip all zero rows in col_buffer_
+  Blob<int> col_buf_mask_;
+  vector<int> left_columns_;//the number of left columns of weight matrix for each group
+  Blob<Dtype> squeezed_weight_buffer_;
+  Dtype *weight_interleaved_; /**< JSP: interleave 8 output channels to vectorize over output channels for direct dense convolution of conv1 */
+  Dtype *input_padded_;
+  Dtype *output_scratch_;
+  //Blob<Dtype> connectivity_mask_;//0.0 means the connection is off, 1.0 means ON
+
+  /** weight sparse matrix */
+  vector<int *> weight_rowptr_;
+  vector<int *> weight_colidx_;
+  vector<Dtype *> weight_values_;
+
+  /** column blocked weight sparse matrix used for sconv345 */
+  vector<int *> weight_rowptr_blocked_;
+  vector<int *> weight_colidx_blocked_;
+  vector<Dtype *> weight_values_blocked_;
+
+  /** direct dense convolution with libxsmm */
+  libxsmm_dnn_conv_desc libxsmm_conv_desc_;
+  libxsmm_dnn_conv_handle *libxsmm_handle_[MAX_THREADS];
+  libxsmm_dnn_buffer *libxsmm_input_[MAX_THREADS];
+  libxsmm_dnn_buffer *libxsmm_output_[MAX_THREADS];
+  libxsmm_dnn_filter *libxsmm_filter_;
 };
 
 }  // namespace caffe

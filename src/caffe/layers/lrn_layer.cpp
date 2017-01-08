@@ -1,9 +1,19 @@
 #include <vector>
+#include <omp.h>
+#include <immintrin.h>
 
 #include "caffe/layers/lrn_layer.hpp"
 #include "caffe/util/math_functions.hpp"
+#include "caffe/util/intrinsic.hpp"
 
 namespace caffe {
+
+template <typename Dtype>
+LRNLayer<Dtype>::~LRNLayer()
+{
+  free(scale_temp_);
+  free(padded_square_);
+}
 
 template <typename Dtype>
 void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
@@ -87,6 +97,9 @@ void LRNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     product_layer_->Reshape(product_bottom_vec_, top);
     break;
   }
+  if (channels_*height_*width_%8 != 0) {
+    LOG(FATAL) << "channels_*height_*width_ should be a multiple of 8";
+  }
 }
 
 template <typename Dtype>
@@ -104,51 +117,181 @@ void LRNLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void LRNLayer<Dtype>::CrossChannelForward_cpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
-  const Dtype* bottom_data = bottom[0]->cpu_data();
-  Dtype* top_data = top[0]->mutable_cpu_data();
-  Dtype* scale_data = scale_.mutable_cpu_data();
-  // start with the constant value
-  for (int i = 0; i < scale_.count(); ++i) {
-    scale_data[i] = k_;
-  }
-  Blob<Dtype> padded_square(1, channels_ + size_ - 1, height_, width_);
-  Dtype* padded_square_data = padded_square.mutable_cpu_data();
-  caffe_set(padded_square.count(), Dtype(0), padded_square_data);
-  Dtype alpha_over_size = alpha_ / size_;
-  // go through the images
-  for (int n = 0; n < num_; ++n) {
+template <>
+void LRNLayer<double>::CrossChannelForward_cpu(
+    const vector<Blob<double>*>& bottom, const vector<Blob<double>*>& top) {
+  NOT_IMPLEMENTED;
+}
+
+template<typename Dtype, int CHANNELS, int SIZE, int HEIGHT, int WIDTH>
+void lrn_(Dtype *top_data, Dtype alpha, Dtype beta, Dtype k, Dtype *padded_square_data, const Dtype *bottom_data, int bottom_offset, int offset)
+{
+  assert(WIDTH%VLEN == 0);
+
+  float alpha_over_size = alpha/SIZE;
+  const int PRE_PAD = (SIZE - 1)/2;
+
+  SIMDFPTYPE scale_data_v[(WIDTH + VLEN - 1)/VLEN];
+  SIMDFPTYPE alpha_over_size_v = _MM_SET1(alpha/SIZE);
+
+  for (int i = 0; i < HEIGHT; ++i) {
     // compute the padded square
-    caffe_sqr(channels_ * height_ * width_,
-        bottom_data + bottom[0]->offset(n),
-        padded_square_data + padded_square.offset(0, pre_pad_));
+    for (int c = PRE_PAD; c < SIZE; ++c) {
+      for (int j = 0; j < WIDTH; j += VLEN) {
+        SIMDFPTYPE d = _MM_LOAD(bottom_data + bottom_offset + ((c - PRE_PAD)*HEIGHT + i)*WIDTH + j);
+        _MM_STORE(padded_square_data + c*WIDTH + j, _MM_MUL(d, d));
+      }
+    }
+
     // Create the first channel scale
-    for (int c = 0; c < size_; ++c) {
-      caffe_axpy<Dtype>(height_ * width_, alpha_over_size,
-          padded_square_data + padded_square.offset(0, c),
-          scale_data + scale_.offset(n, 0));
+    for (int j = 0; j < WIDTH; j += VLEN) {
+      scale_data_v[j/VLEN] = _MM_FMADD(
+          alpha_over_size_v,
+          _MM_LOAD(padded_square_data + j),
+          _MM_SET1(k));
     }
-    for (int c = 1; c < channels_; ++c) {
-      // copy previous scale
-      caffe_copy<Dtype>(height_ * width_,
-          scale_data + scale_.offset(n, c - 1),
-          scale_data + scale_.offset(n, c));
-      // add head
-      caffe_axpy<Dtype>(height_ * width_, alpha_over_size,
-          padded_square_data + padded_square.offset(0, c + size_ - 1),
-          scale_data + scale_.offset(n, c));
-      // subtract tail
-      caffe_axpy<Dtype>(height_ * width_, -alpha_over_size,
-          padded_square_data + padded_square.offset(0, c - 1),
-          scale_data + scale_.offset(n, c));
+    for (int c = 1; c < SIZE; ++c) {
+      for (int j = 0; j < WIDTH; j += VLEN) {
+        scale_data_v[j/VLEN] = _MM_FMADD(
+            _MM_SET1(alpha_over_size),
+            _MM_LOAD(padded_square_data + c*WIDTH + j),
+            scale_data_v[j/VLEN]);
+
+        SIMDFPTYPE v = _MM_POW(scale_data_v[j/VLEN], _MM_SET1(-beta));
+        v = _MM_MUL(v, _MM_LOAD(bottom_data + offset + i*WIDTH + j));
+        _MM_STORE(top_data + offset + i*WIDTH + j, v);
+      }
     }
+
+    for (int c = 1; c < CHANNELS; ++c) {
+      if (c < CHANNELS + PRE_PAD - SIZE + 1) {
+#pragma unroll(WIDTH/VLEN)
+        for (int j = 0; j < WIDTH; j += VLEN) {
+          SIMDFPTYPE d = _MM_LOAD(bottom_data + bottom_offset + ((c - PRE_PAD + SIZE - 1)*HEIGHT + i)*WIDTH + j);
+          _MM_STORE(padded_square_data + (c + SIZE - 1)%(SIZE + 1)*WIDTH + j, _MM_MUL(d, d));
+        }
+      }
+
+#pragma unroll(WIDTH/VLEN)
+      for (int j = 0; j < WIDTH; j += VLEN) {
+        scale_data_v[j/VLEN] = _MM_FMADD(
+            alpha_over_size_v,
+            _MM_SUB(
+                _MM_LOAD(padded_square_data + (c + SIZE - 1)%(SIZE + 1)*WIDTH + j),
+                _MM_LOAD(padded_square_data + (c - 1)%(SIZE + 1)*WIDTH + j)),
+            scale_data_v[j/VLEN]);
+
+        SIMDFPTYPE v = _MM_POW(scale_data_v[j/VLEN], _MM_SET1(-beta));
+        v = _MM_MUL(v, _MM_LOAD(bottom_data + offset + (c*HEIGHT + i)*WIDTH + j));
+        _MM_STORE(top_data + offset + (c*HEIGHT + i)*WIDTH + j, v);
+      }
+    }
+  }
+}
+
+template <>
+void LRNLayer<float>::CrossChannelForward_cpu(
+    const vector<Blob<float>*>& bottom, const vector<Blob<float>*>& top) {
+  const float* bottom_data = bottom[0]->cpu_data();
+  float* top_data = top[0]->mutable_cpu_data();
+  if (!padded_square_) {
+    posix_memalign(
+        (void **)&padded_square_,
+        4096,
+        sizeof(float) * omp_get_max_threads() * (channels_ + size_ - 1) * width_);
+  }
+  float alpha_over_size = alpha_ / size_;
+  if (!scale_temp_) {
+    posix_memalign(
+        (void **)&scale_temp_,
+        4096,
+        sizeof(float) * omp_get_max_threads() * channels_ * height_ * width_);
   }
 
-  // In the end, compute output
-  caffe_powx<Dtype>(scale_.count(), scale_data, -beta_, top_data);
-  caffe_mul<Dtype>(scale_.count(), top_data, bottom_data, top_data);
+#pragma omp parallel
+  {
+    int tid = omp_get_thread_num();
+
+    float* padded_square_data = padded_square_ + tid * (channels_ + size_ - 1) * width_;
+    for (int i = 0; i < pre_pad_ * width_; ++i) {
+      padded_square_data[i] = 0;
+    }
+    for (int i = (channels_ + pre_pad_) * width_; i < (channels_ + size_ - 1) * width_; ++i) {
+      padded_square_data[i] = 0;
+    }
+
+    float *scale_data = scale_temp_ + tid * channels_ * height_ * width_;
+
+    // go through the images
+#pragma omp for
+    for (int n = 0; n < num_; ++n) {
+      int bottom_offset = bottom[0]->offset(n);
+      int offset = scale_.offset(n, 0);
+
+#ifndef __AVX512F__
+      if (5 == size_ && height_ == width_ && 1 == k_) {
+        if (56 == height_) {
+          // GoogLeNet
+          if (64 == channels_) {
+            lrn_<float, 64, 5, 56, 56>(top_data, alpha_, beta_, 1.f, padded_square_data, bottom_data, bottom_offset, offset);
+            continue;
+          }
+          else if (192 == channels_) {
+            lrn_<float, 192, 5, 56, 56>(top_data, alpha_, beta_, 1.f, padded_square_data, bottom_data, bottom_offset, offset);
+            continue;
+          }
+        }
+      }
+#endif
+
+      for (int i = 0; i < height_; ++i) {
+        // compute the padded square
+        for (int c = pre_pad_; c < channels_ + pre_pad_; ++c) {
+          for (int j = 0; j < width_; ++j) {
+            float d = bottom_data[bottom_offset + (c - pre_pad_) * height_ * width_ + i * width_ + j];
+            padded_square_data[c * width_ + j] = d * d;
+          }
+        }
+
+        // Create the first channel scale
+        for (int j = 0; j < width_; ++j) {
+          scale_data[i * width_ + j] = k_ + alpha_over_size*padded_square_data[j];
+        }
+        for (int c = 1; c < size_; ++c) {
+          for (int j = 0; j < width_; ++j) {
+            scale_data[i * width_ + j] += alpha_over_size*padded_square_data[c * width_ + j];
+          }
+        }
+
+        for (int c = 1; c < channels_; ++c) {
+          for (int j = 0; j < width_; ++j) {
+            scale_data[(c * height_ + i) * width_ + j] =
+              scale_data[((c - 1) * height_ + i) * width_ + j] +
+              alpha_over_size*(
+                  padded_square_data[(c + size_ - 1) * width_ + j] -
+                  padded_square_data[(c - 1) * width_ + j]);
+          }
+        }
+      }
+
+#ifdef __AVX2__
+      for (int i = 0; i < channels_ * height_ * width_; i += 8) {
+        __m256 v = _mm256_pow_ps(_mm256_load_ps(scale_data + i), _mm256_set1_ps(-beta_));
+        v = _mm256_mul_ps(v, _mm256_load_ps(bottom_data + offset + i));
+        _mm256_store_ps(top_data + offset + i, v);
+      }
+#else
+      for (int i = 0; i < channels_ * height_ * width_; i += 8) {
+        __m128 v = _mm_pow_ps(_mm_load_ps(scale_data + i), _mm_set1_ps(-beta_));
+        v = _mm_mul_ps(v, _mm_load_ps(bottom_data + offset + i));
+        _mm_store_ps(top_data + offset + i, v);
+        v = _mm_pow_ps(_mm_load_ps(scale_data + i + 4), _mm_set1_ps(-beta_));
+        v = _mm_mul_ps(v, _mm_load_ps(bottom_data + offset + i + 4));
+        _mm_store_ps(top_data + offset + i + 4, v);
+      }
+#endif
+    }
+  } // omp parallel
 }
 
 template <typename Dtype>
