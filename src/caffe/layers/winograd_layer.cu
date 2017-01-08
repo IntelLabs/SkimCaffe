@@ -137,80 +137,73 @@ void WinogradLayer<float>::Forward_gpu(const vector<Blob<float>*>& bottom,
     float* top_data = top[i]->mutable_gpu_data();
 
     int M = this->conv_in_channels_*ntiles_h_*ntiles_w_;
-    int num_kernels = this->num_*this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
     int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
     int pad_h = this->pad_.cpu_data()[0], pad_w = this->pad_.cpu_data()[1];
 
-    winograd_input_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
-                                              CAFFE_CUDA_NUM_THREADS>>>(
-      num_kernels, bottom_data, this->col_buffer_.mutable_gpu_data(),
-      height, width,
-      pad_h, pad_w,
-      ntiles_h_, ntiles_w_,
-      tile_h_in_, tile_w_in_,
-      tile_h_out_, tile_w_out_);
-    CUDA_POST_KERNEL_CHECK;
+    for (int n = 0; n < this->num_; ++n) {
+      int num_kernels = this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
+      winograd_input_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
+                                                CAFFE_CUDA_NUM_THREADS>>>(
+        num_kernels, bottom_data + n*this->bottom_dim_, this->col_buffer_.mutable_gpu_data(),
+        height, width,
+        pad_h, pad_w,
+        ntiles_h_, ntiles_w_,
+        tile_h_in_, tile_w_in_,
+        tile_h_out_, tile_w_out_);
+      CUDA_POST_KERNEL_CHECK;
 
-    caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
-      tile_h_in_*tile_w_in_, this->num_*M, tile_h_in_*tile_w_in_,
-      (float)1, BKronB->get()->gpu_data(), this->col_buffer_.mutable_gpu_data(),
-      (float)0, temp1_.mutable_gpu_data());
-      // temp1_ has (tile_h_in*tile_w_in) x num_ x (conv_in_channels) x (ntiles_h*ntiles_w) dimension
+      caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
+        tile_h_in_*tile_w_in_, M, tile_h_in_*tile_w_in_,
+        (float)1, BKronB->get()->gpu_data(), this->col_buffer_.mutable_gpu_data(),
+        (float)0, temp1_.mutable_gpu_data());
+        // temp1_ has (tile_h_in*tile_w_in) x (conv_in_channels) x (ntiles_h*ntiles_w) dimension
 
-    // Convolution in Winograd domain
-    {
-      float alpha = 1, beta = 0;
+      // Convolution in Winograd domain
+      {
+        float alpha = 1, beta = 0;
 
-      int M = this->conv_out_channels_/this->group_;
-      int N = ntiles_h_*ntiles_w_;
-      int K = this->conv_in_channels_/this->group_;
+        int M = this->conv_out_channels_/this->group_;
+        int N = ntiles_h_*ntiles_w_;
+        int K = this->conv_in_channels_/this->group_;
 
-      float **weight_ptrs = (float **)weight_ptrs_->mutable_cpu_data();
-      if (NULL == weight_ptrs[0]) {
-        for (int n = 0; n < this->num_; ++n) {
+        float **weight_ptrs = (float **)weight_ptrs_->mutable_cpu_data();
+        if (NULL == weight_ptrs[0]) {
           for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
-            weight_ptrs[n*tile_h_in_*tile_w_in_*this->group_ + j] = 
-            //weight_ptrs[n + j*this->num_] = 
+            weight_ptrs[j] = 
               this->blobs_[0]->mutable_gpu_data() +
               j*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_);
           }
         }
+
+        CUBLAS_CHECK(cublasSgemmBatched(
+          Caffe::cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+          N, M, K,
+          &alpha,
+          (const float **)in_activation_ptrs_->gpu_data(), N,
+          (const float **)weight_ptrs_->gpu_data(), K,
+          &beta,
+          (float **)out_activation_ptrs_->mutable_gpu_data(), N,
+          tile_h_in_*tile_w_in_*this->group_));
       }
+        // col_buff has (tile_h_in*tile_w_in) x (conv_out_channels) x (ntiles_h*ntiles_w)
 
-      // TODO: instead of tile_h_in_ x tile_w_in_ x num_ instances of 
-      // N x C x (ntiles_h_*ntiles_w_) GEMMs,
-      // use tile_h_in_ x tile_w_in_ instances of
-      // N x C x (num_*ntiles_h_*ntiles_w_) GEMMs
-      CUBLAS_CHECK(cublasSgemmBatched(
-        Caffe::cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-        N, M, K,
-        &alpha,
-        (const float **)in_activation_ptrs_->gpu_data(), N,
-        (const float **)weight_ptrs_->gpu_data(), K,
-        &beta,
-        (float **)out_activation_ptrs_->mutable_gpu_data(), N,
-        in_activation_ptrs_->count()));
-    }
-      // col_buff has num_ x (tile_h_in*tile_w_in) x (conv_out_channels) x (ntiles_h*ntiles_w)
+      // Transform back to time domain
+      caffe_gpu_gemm<float>(CblasTrans, CblasNoTrans,
+          this->conv_out_channels_*ntiles_h_*ntiles_w_, tile_h_out_*tile_w_out_, tile_h_in_*tile_w_in_,
+          (float)1, temp2_.gpu_data(), AKronA->get()->gpu_data(),
+          (float)0, temp1_.mutable_gpu_data());
 
-    // Transform back to time domain
-    caffe_gpu_gemm<float>(CblasTrans, CblasNoTrans,
-        this->num_*this->conv_out_channels_*ntiles_h_*ntiles_w_, tile_h_out_*tile_w_out_, tile_h_in_*tile_w_in_,
-        (float)1, temp2_.gpu_data(), AKronA->get()->gpu_data(),
-        (float)0, temp1_.mutable_gpu_data());
+      num_kernels = this->conv_out_channels_*ntiles_h_*ntiles_w_*tile_h_out_*tile_w_out_;
+      const int output_h = this->output_shape_[0], output_w = this->output_shape_[1];
+      winograd_output_col2im_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
+                                                 CAFFE_CUDA_NUM_THREADS>>>(
+        num_kernels,
+        temp1_.gpu_data(), top_data + n*this->top_dim_,
+        output_h, output_w,
+        ntiles_h_, ntiles_w_,
+        tile_h_out_, tile_w_out_); 
+      CUDA_POST_KERNEL_CHECK;
 
-    num_kernels = this->num_*this->conv_out_channels_*ntiles_h_*ntiles_w_*tile_h_out_*tile_w_out_;
-    const int output_h = this->output_shape_[0], output_w = this->output_shape_[1];
-    winograd_output_col2im_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
-                                               CAFFE_CUDA_NUM_THREADS>>>(
-      num_kernels,
-      temp1_.gpu_data(), top_data,
-      output_h, output_w,
-      ntiles_h_, ntiles_w_,
-      tile_h_out_, tile_w_out_); 
-    CUDA_POST_KERNEL_CHECK;
-
-    for (int n = 0; n < this->num_; ++n) { // JSP: this->num_ is batch size
       if (this->bias_term_) {
         const float* bias = this->blobs_[1]->gpu_data();
         this->forward_gpu_bias(top_data + n * this->top_dim_, bias);
@@ -262,73 +255,72 @@ void WinogradLayer<float>::Backward_gpu(const vector<Blob<float>*>& top,
     }
     if (this->param_propagate_down_[0] || propagate_down[i]) {
       int M = this->conv_out_channels_*ntiles_h_*ntiles_w_;
-      int num_kernels = this->num_*this->conv_out_channels_*ntiles_h_*ntiles_w_*tile_h_out_*tile_w_out_;
       const int output_h = this->output_shape_[0], output_w = this->output_shape_[1];
       const int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
       const int pad_h = this->pad_.cpu_data()[0], pad_w = this->pad_.cpu_data()[1];
 
-      winograd_output_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
-                                                 CAFFE_CUDA_NUM_THREADS>>>(
-        num_kernels,
-        top_diff, temp1_.mutable_gpu_data(),
-        output_h, output_w,
-        ntiles_h_, ntiles_w_,
-        tile_h_out_, tile_w_out_);
-      CUDA_POST_KERNEL_CHECK;
-
-      // Transform out_diff to Winograd domain
-      caffe_gpu_gemm<float>(CblasNoTrans, CblasTrans,
-          tile_h_in_*tile_w_in_, this->num_*M, tile_h_out_*tile_w_out_,
-          (float)1, AKronA->get()->gpu_data(), temp1_.mutable_gpu_data(),
-          (float)0, temp2_.mutable_gpu_data());
-      // temp_ has (tile_h_in*tile_w_in) x num_ x (conv_out_channels) x (ntiles_h*ntiles_w) dimension
-
-      // gradient w.r.t. weight. Note that we will accumulate diffs.
-      if (this->param_propagate_down_[0]) {
-        int num_kernels = this->num_*this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
-
-        winograd_input_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
-                                                  CAFFE_CUDA_NUM_THREADS>>>(
-          num_kernels, bottom_data, this->col_buffer_.mutable_gpu_data(),
-          height, width,
-          pad_h, pad_w,
+      for (int n = 0; n < this->num_; ++n) {
+        int num_kernels = this->conv_out_channels_*ntiles_h_*ntiles_w_*tile_h_out_*tile_w_out_;
+        winograd_output_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
+                                                   CAFFE_CUDA_NUM_THREADS>>>(
+          num_kernels,
+          top_diff + n*this->top_dim_, temp1_.mutable_gpu_data(),
+          output_h, output_w,
           ntiles_h_, ntiles_w_,
-          tile_h_in_, tile_w_in_,
           tile_h_out_, tile_w_out_);
         CUDA_POST_KERNEL_CHECK;
 
-        // Transform input to Winograd domain
-        caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
-            tile_h_in_*tile_w_in_, this->num_*this->conv_in_channels_*ntiles_h_*ntiles_w_, tile_h_in_*tile_w_in_,
-            (float)1, BKronB->get()->gpu_data(), this->col_buffer_.mutable_gpu_data(),
-            (float)0, temp1_.mutable_gpu_data());
-        // temp_ has (tile_h_in*tile_w_in) x num_ x (conv_in_channels) x (ntiles_h*ntiles_w) dimension
+        // Transform out_diff to Winograd domain
+        caffe_gpu_gemm<float>(CblasNoTrans, CblasTrans,
+            tile_h_in_*tile_w_in_, M, tile_h_out_*tile_w_out_,
+            (float)1, AKronA->get()->gpu_data(), temp1_.mutable_gpu_data(),
+            (float)0, temp2_.mutable_gpu_data());
+        // temp_ has (tile_h_in*tile_w_in) x (conv_out_channels) x (ntiles_h*ntiles_w) dimension
 
-        if (false/*n == 0*/) {
-          const float *weight_diff_cpu = this->blobs_[0]->cpu_diff();
-          fprintf(stderr, "weight_diff_winograd0[0]\n");
-          for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
-            for (int n = 0; n < this->conv_out_channels_; ++n) {
-              for (int c = 0; c < this->conv_in_channels_; ++c) {
-                fprintf(stderr, "%g ", weight_diff_cpu[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+        // gradient w.r.t. weight. Note that we will accumulate diffs.
+        if (this->param_propagate_down_[0]) {
+
+          int num_kernels = this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
+
+          winograd_input_im2col_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
+                                                    CAFFE_CUDA_NUM_THREADS>>>(
+            num_kernels, bottom_data + n*this->bottom_dim_, this->col_buffer_.mutable_gpu_data(),
+            height, width,
+            pad_h, pad_w,
+            ntiles_h_, ntiles_w_,
+            tile_h_in_, tile_w_in_,
+            tile_h_out_, tile_w_out_);
+          CUDA_POST_KERNEL_CHECK;
+
+          // Transform input to Winograd domain
+          caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
+              tile_h_in_*tile_w_in_, this->conv_in_channels_*ntiles_h_*ntiles_w_, tile_h_in_*tile_w_in_,
+              (float)1, BKronB->get()->gpu_data(), this->col_buffer_.mutable_gpu_data(),
+              (float)0, temp1_.mutable_gpu_data());
+          // temp_ has (tile_h_in*tile_w_in) x (conv_in_channels) x (ntiles_h*ntiles_w) dimension
+
+          if (false/*n == 0*/) {
+            const float *weight_diff_cpu = this->blobs_[0]->cpu_diff();
+            fprintf(stderr, "weight_diff_winograd0[0]\n");
+            for (int j = 0; j < tile_h_in_*tile_w_in_; ++j) {
+              for (int n = 0; n < this->conv_out_channels_; ++n) {
+                for (int c = 0; c < this->conv_in_channels_; ++c) {
+                  fprintf(stderr, "%g ", weight_diff_cpu[(j*this->conv_out_channels_ + n)*this->conv_in_channels_ + c]);
+                }
               }
+              fprintf(stderr, "\n");
             }
-            fprintf(stderr, "\n");
           }
-        }
-      }
 
-      if (this->param_propagate_down_[0]) {
-        float **weight_diff_ptrs = (float **)weight_diff_ptrs_->mutable_cpu_data();
-        if (NULL == weight_diff_ptrs[0]) {
-          for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
-            weight_diff_ptrs[j] =
-              this->blobs_[0]->mutable_gpu_diff() +
-              j*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_);
+          float **weight_diff_ptrs = (float **)weight_diff_ptrs_->mutable_cpu_data();
+          if (NULL == weight_diff_ptrs[0]) {
+            for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
+              weight_diff_ptrs[j] =
+                this->blobs_[0]->mutable_gpu_diff() +
+                j*(this->conv_out_channels_/this->group_)*(this->conv_in_channels_/this->group_);
+            }
           }
-        }
 
-        for (int n = 0; n < this->num_; ++n) {
           float alpha = 1, beta = 1;
 
           int M = this->conv_out_channels_/this->group_;
@@ -339,8 +331,8 @@ void WinogradLayer<float>::Backward_gpu(const vector<Blob<float>*>& top,
             Caffe::cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N,
             N, M, K,
             &alpha,
-            (const float **)out_activation_ptrs_->gpu_data() + n*tile_h_in_*tile_w_in_*this->group_, K,
-            (const float **)in_activation_ptrs_->gpu_data() + n*tile_h_in_*tile_w_in_*this->group_, K,
+            (const float **)out_activation_ptrs_->gpu_data(), K,
+            (const float **)in_activation_ptrs_->gpu_data(), K,
             &beta,
             (float **)weight_diff_ptrs_->mutable_gpu_data(), N,
             tile_h_in_*tile_w_in_*this->group_));
@@ -368,8 +360,8 @@ void WinogradLayer<float>::Backward_gpu(const vector<Blob<float>*>& top,
                 (float)0, temp_weight);
                 
             float *temp_weight_cpu = new float[len];
-						CUDA_CHECK(cudaFree(temp_weight));
-						CUDA_CHECK(cudaMemcpy(temp_weight_cpu, temp_weight, sizeof(float)*len, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaFree(temp_weight));
+            CUDA_CHECK(cudaMemcpy(temp_weight_cpu, temp_weight, sizeof(float)*len, cudaMemcpyDeviceToHost));
 
             fprintf(stderr, "weight_diff[%d]\n", n);
             for (int m = 0; m < this->conv_out_channels_; ++m) {
@@ -382,7 +374,7 @@ void WinogradLayer<float>::Backward_gpu(const vector<Blob<float>*>& top,
             }
             delete[] temp_weight_cpu;
 
-						const float *weight_diff_cpu = this->blobs_[0]->cpu_diff();
+            const float *weight_diff_cpu = this->blobs_[0]->cpu_diff();
             fprintf(stderr, "weight_diff_winograd[%d]\n", n);
             for (int n = 0; n < this->conv_out_channels_; ++n) {
               for (int c = 0; c < this->conv_in_channels_; ++c) {
@@ -393,52 +385,56 @@ void WinogradLayer<float>::Backward_gpu(const vector<Blob<float>*>& top,
               fprintf(stderr, "\n");
             }
           }
-        }
+        } // param_propagate_down_[0]
 
-        float alpha = 1, beta =0;
-        int M = this->conv_in_channels_/this->group_;
-        int N = ntiles_h_*ntiles_w_;
-        int K = this->conv_out_channels_/this->group_;
+        // gradient w.r.t. bottom data, if necessary.
+        if (propagate_down[i]) {
+          // Convolution in Winograd domain
+          float alpha = 1, beta = 0;
+          int M = this->conv_in_channels_/this->group_;
+          int N = ntiles_h_*ntiles_w_;
+          int K = this->conv_out_channels_/this->group_;
 
-        CUBLAS_CHECK(cublasSgemmBatched(
-          Caffe::cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_T,
-          N, M, K,
-          &alpha,
-          (const float **)out_activation_ptrs_->gpu_data(), N,
-          (const float **)weight_ptrs_->gpu_data(), M,
-          &beta,
-          (float **)in_activation_ptrs_->mutable_gpu_data(), N,
-          in_activation_ptrs_->count()));
+          CUBLAS_CHECK(cublasSgemmBatched(
+            Caffe::cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_T,
+            N, M, K,
+            &alpha,
+            (const float **)out_activation_ptrs_->gpu_data(), N,
+            (const float **)weight_ptrs_->gpu_data(), M,
+            &beta,
+            (float **)in_activation_ptrs_->mutable_gpu_data(), N,
+            in_activation_ptrs_->count()));
 
-        // Transform back to time domain
-        caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
-            this->num_*this->conv_in_channels_*ntiles_h_*ntiles_w_, tile_h_in_*tile_w_in_, tile_h_in_*tile_w_in_,
-            (float)1, temp1_.mutable_gpu_data(), BKronB->get()->gpu_data(),
-            (float)0, this->col_buffer_.mutable_gpu_data());
+          // Transform back to time domain
+          caffe_gpu_gemm<float>(CblasTrans, CblasTrans,
+              this->conv_in_channels_*ntiles_h_*ntiles_w_, tile_h_in_*tile_w_in_, tile_h_in_*tile_w_in_,
+              (float)1, temp1_.mutable_gpu_data(), BKronB->get()->gpu_data(),
+              (float)0, this->col_buffer_.mutable_gpu_data());
 
-        num_kernels = this->num_*this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
+          num_kernels = this->conv_in_channels_*ntiles_h_*ntiles_w_*tile_h_in_*tile_w_in_;
 
-        CUDA_CHECK(cudaMemset(bottom_diff, 0, sizeof(float)*this->num_*this->conv_in_channels_*height*width));
-        winograd_input_col2im_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
-                                                  CAFFE_CUDA_NUM_THREADS>>>(
-          num_kernels,
-          this->col_buffer_.gpu_data(), bottom_diff,
-          height, width,
-          pad_h, pad_w,
-          ntiles_h_, ntiles_w_,
-          tile_h_in_, tile_w_in_,
-          tile_h_out_, tile_w_out_);
+          CUDA_CHECK(cudaMemset(bottom_diff + n*this->bottom_dim_, 0, sizeof(float)*this->conv_in_channels_*height*width));
+          winograd_input_col2im_gpu_kernel<float><<<CAFFE_GET_BLOCKS(num_kernels),
+                                                    CAFFE_CUDA_NUM_THREADS>>>(
+            num_kernels,
+            this->col_buffer_.gpu_data(), bottom_diff + n*this->bottom_dim_,
+            height, width,
+            pad_h, pad_w,
+            ntiles_h_, ntiles_w_,
+            tile_h_in_, tile_w_in_,
+            tile_h_out_, tile_w_out_);
 
 #if 0
-        const float *bottom_diff_cpu = bottom[i]->cpu_diff();
-        for (int i = 0; i < this->bottom_dim_; ++i) {
-          if (isnan(bottom_diff_cpu[i])) {
-            ostringstream str;
-            str << "nan at bottom_diff[" << n << ", " << i << "]";
+          const float *bottom_diff_cpu = bottom[i]->cpu_diff();
+          for (int i = 0; i < this->bottom_dim_; ++i) {
+            if (isnan(bottom_diff_cpu[i])) {
+              ostringstream str;
+              str << "nan at bottom_diff[" << n << ", " << i << "]";
+            }
           }
-        }
 #endif
-      } // param_propagate_down_[0]
+        } // propagate_down_[i]
+      }
     }
   }
 }
