@@ -33,6 +33,7 @@ class SGDSolver : public Solver<Dtype> {
   virtual Dtype Regularize(int param_id);
   virtual Dtype GetSparsity(int param_id);
   virtual Dtype GetWinogradSparsity(int param_id);
+  virtual Dtype GetWinogradSparsityOld(int param_id);
   virtual Dtype GetFiberSparsity(int param_id, int mode);
   virtual Dtype GetSliceSparsity(int param_id, int mode);
   virtual Dtype GetGroupSparsity(int param_id, bool dimen=true);

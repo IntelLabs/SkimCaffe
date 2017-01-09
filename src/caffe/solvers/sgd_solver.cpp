@@ -233,6 +233,15 @@ void SGDSolver<Dtype>::ApplyUpdate() {
 	}
 	LOG(INFO) << sparsity_msg_stream.str();
 
+	sparsity_msg_stream.str("");
+	sparsity_msg_stream << "     Winograd Old Sparsity %: \n";
+	for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
+    if (this->net_->learnable_params()[param_id]->num_axes() >= 2) {
+		  sparsity_msg_stream << GetWinogradSparsityOld(param_id) <<"\t";
+    }
+	}
+	LOG(INFO) << sparsity_msg_stream.str();
+
   PrintWinogradFiberSliceSparsity();
 
 #if 0
@@ -1128,7 +1137,7 @@ Dtype SGDSolver<Dtype>::GetSparsity(int param_id) {
 }
 
 template <typename Dtype>
-Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
+Dtype SGDSolver<Dtype>::GetWinogradSparsityOld(int param_id) {
   const vector<Blob<Dtype>*>& net_params = this->net_->learnable_params();
   Dtype sparsity = Dtype(0);
   Blob<Dtype> *param = net_params[param_id];
@@ -1183,6 +1192,81 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
       else {
         caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights, thresholds, M*M, (Dtype)this->param_.measure_threshold());
       }
+      caffe_gpu_asum(N*C*M*M, winograd_weights, &sparsity);
+      sparsity = sparsity*100./(N*C*M*M);
+#else
+      NO_GPU;
+#endif
+      break;
+    }
+    default:
+      LOG(FATAL) << "Unknown caffe mode: " << Caffe::mode();
+    }
+  }
+  else {
+    return GetWinogradSparsity(param_id);
+  }
+
+  return sparsity;
+}
+
+template <typename Dtype>
+Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
+  const vector<Blob<Dtype>*>& net_params = this->net_->learnable_params();
+  Dtype sparsity = Dtype(0);
+  Blob<Dtype> *param = net_params[param_id];
+
+  if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+    int N = param->shape()[0];
+    int C = param->shape()[1];
+    int K = param->shape()[2];
+
+    WinogradGKronG<Dtype> *A = WinogradGKronG<Dtype>::getInstance(K);
+    int M = A->M;
+    Dtype thre = this->param_.measure_threshold();
+
+    switch (Caffe::mode()) {
+    case Caffe::CPU: {
+      const Dtype *weights = param->cpu_data();
+      Dtype *temp = temp_[param_id]->mutable_cpu_data();
+
+      if (this->param_.prune_threshold() == 0) {
+        for (int i = 0; i < (N*C)*(K*K); ++i) {
+          temp[i] = (weights[i] <= thre && weights[i] >= -thre) ? 0 : weights[i];
+        }
+      }
+
+      Dtype *winograd_weights = temp_winograd_[param_id]->mutable_cpu_data();
+      caffe_cpu_gemm(
+        CblasNoTrans, CblasTrans,
+        N*C, M*M, K*K,
+        (Dtype)1, this->param_.prune_threshold() == 0 ? temp : weights,
+        A->get()->cpu_data(),
+        (Dtype)0, winograd_weights);
+
+      int count = 0;
+      for (int i = 0; i < (N*C)*(M*M); ++i) {
+        if (winograd_weights[i] == 0) ++count;
+      }
+
+      sparsity = count*100./(N*C*M*M);
+      break;
+    }
+    case Caffe::GPU: {
+#ifndef CPU_ONLY
+      if (this->param_.prune_threshold() == 0) {
+        caffe_gpu_zerout(param->count(), param->gpu_data(), temp_[param_id]->mutable_gpu_data(), thre);
+      }
+
+      Dtype *winograd_weights = temp_winograd_[param_id]->mutable_gpu_data();
+      caffe_gpu_gemm(
+        CblasNoTrans, CblasTrans,
+        N*C, M*M, K*K,
+        (Dtype)1, this->param_.prune_threshold() == 0 ? temp_[param_id]->mutable_gpu_data() : param->gpu_data(),
+        A->get()->gpu_data(),
+        (Dtype)0, winograd_weights);
+
+      caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights, thre);
       caffe_gpu_asum(N*C*M*M, winograd_weights, &sparsity);
       sparsity = sparsity*100./(N*C*M*M);
 #else
@@ -1448,6 +1532,16 @@ Dtype SGDSolver<Dtype>::GroupLassoRegularize(int param_id) {
   }
   case Caffe::GPU: {
 #ifndef CPU_ONLY
+    if (this->param_.regularization_type() == "L1_Winograd" && net_params[param_id]->num_axes() == 4 &&
+        (net_params[param_id]->shape(2) == 3 || net_params[param_id]->shape(2) == 5)) {
+      if (if_learn_kernel_shape) {
+        // group lasso of all-zero ic-mode slices
+      }
+      if (if_learn_breadth) {
+        // group lasso of all-zero oc-mode slices
+      }
+    } // Winograd
+    else {
 	//group lasso along columns (channels)
     if (if_learn_kernel_shape) {
     	int group_size = net_params[param_id]->shape(0)/net_param_groups[param_id];//number of kernels in each group
@@ -1512,6 +1606,7 @@ Dtype SGDSolver<Dtype>::GroupLassoRegularize(int param_id) {
 						net_params[param_id]->mutable_gpu_diff());
     	}
     }
+    } // !Winograd
 #else
     NO_GPU;
 #endif
