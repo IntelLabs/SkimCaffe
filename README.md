@@ -26,6 +26,12 @@ More details on direct sparse convolution is described at: https://arxiv.org/abs
 
 1) Set up Intel compiler environment (compilervars.sh or compilervars.csh)
 
+2) Compile libxsmm:
+
+```
+make libxsmm
+```
+
 2) Build Caffe as usual
 
 Additional options:
