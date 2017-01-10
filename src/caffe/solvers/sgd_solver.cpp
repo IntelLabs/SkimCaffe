@@ -486,7 +486,7 @@ void SGDSolver<Dtype>::ApplyUpdate() {
               (Dtype)0, param->mutable_gpu_data());
           }
           else {
-            Dtype *wt_cpu = regularization_type == "L1_Winograd" ? param->mutable_cpu_data() : unthresholded_[param_id]->mutable_cpu_data();
+            //Dtype *wt_cpu = regularization_type == "L1_Winograd" ? param->mutable_cpu_data() : unthresholded_[param_id]->mutable_cpu_data();
             //Dtype *wt_cpu_temp = new Dtype[N*C*A->N*A->N];
             //memcpy(wt_cpu_temp, wt_cpu, sizeof(Dtype)*N*C*A->N*A->N);
 
@@ -1231,8 +1231,40 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
       Dtype *temp = temp_[param_id]->mutable_cpu_data();
 
       if (this->param_.prune_threshold() == 0) {
-        for (int i = 0; i < (N*C)*(K*K); ++i) {
-          temp[i] = (weights[i] <= thre && weights[i] >= -thre) ? 0 : weights[i];
+        Dtype *temp_winograd = temp_winograd_[param_id]->mutable_cpu_data();
+        const Dtype *thresholds = this->param_.winograd_adjust_threshold() == 1 ? A->getNormOfInvCols()->cpu_data() : NULL;
+        Dtype *wt = /*regularization_type == "L1_Winograd" ? */param->mutable_cpu_data();// : unthresholded_[param_id]->mutable_cpu_data();
+        memcpy(temp, wt, sizeof(Dtype)*(N*C)*(K*K));
+
+        // thre(W*(G \kron G)^T)*(GGT^-1)^T
+        caffe_cpu_gemm(
+          CblasNoTrans, CblasTrans,
+          N*C, M*M, K*K,
+          (Dtype)1, temp,
+          A->get()->cpu_data(),
+          (Dtype)0, temp_winograd);
+
+        for (int i = 0; i < N*C; ++i) {
+          int cnt = 0;
+          for (int j = 0; j < M*M; ++j) {
+            Dtype thre = (thresholds ? thresholds[j] : 1)*thre;
+            if (temp_winograd[i*M*M + j] <= thre && temp_winograd[i*M*M + j] >= -thre) {
+              temp_winograd[i*M*M + j] = 0;
+              ++cnt;
+            }
+          }
+          if (this->param_.winograd_sparsity_factor() != 0) {
+            A->imposeSparsity(temp + i*K*K, temp_winograd + i*M*M, this->param_.winograd_sparsity_factor());
+          }
+        }
+
+        if (this->param_.winograd_sparsity_factor() == 0) {
+          caffe_cpu_gemm(
+            CblasNoTrans, CblasTrans,
+            N*C, K*K, M*M,
+            (Dtype)1, temp_winograd,
+            A->getInv()->cpu_data(),
+            (Dtype)0, temp);
         }
       }
 
@@ -1255,7 +1287,40 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
     case Caffe::GPU: {
 #ifndef CPU_ONLY
       if (this->param_.prune_threshold() == 0) {
-        caffe_gpu_zerout(param->count(), param->gpu_data(), temp_[param_id]->mutable_gpu_data(), thre);
+        Dtype *temp_winograd = temp_winograd_[param_id]->mutable_gpu_data();
+        const Dtype *thresholds = (1 == this->param_.winograd_adjust_threshold()) ? A->getNormOfInvCols()->gpu_data() : NULL;
+        Dtype *wt = /*(regularization_type == "L1_Winograd") ? */param->mutable_gpu_data();// : unthresholded_[param_id]->mutable_gpu_data();
+        CUDA_CHECK(cudaMemcpy(temp_[param_id]->mutable_gpu_data(), wt, sizeof(Dtype)*(N*C)*(K*K), cudaMemcpyDeviceToDevice));
+
+        // thre(W*(G \kron G)^T)*(GGT^-1)^T
+        caffe_gpu_gemm(
+          CblasNoTrans, CblasTrans,
+          N*C, M*M, K*K,
+          (Dtype)1, temp_[param_id]->gpu_data(),
+          A->get()->gpu_data(),
+          (Dtype)0, temp_winograd);
+
+        if (NULL == thresholds) {
+          caffe_gpu_zerout(N*C*M*M, temp_winograd, temp_winograd, thre);
+        }
+        else {
+          caffe_gpu_zerout(N*C*M*M, temp_winograd, thresholds, M*M, thre);
+        }
+
+        if (0 == this->param_.winograd_sparsity_factor()) {
+          caffe_gpu_gemm(
+            CblasNoTrans, CblasTrans,
+            N*C, K*K, M*M,
+            (Dtype)1, temp_winograd,
+            A->getInv()->gpu_data(),
+            (Dtype)0, temp_[param_id]->mutable_gpu_data());
+        }
+        else {
+          caffe_gpu_impose_sparsity(
+            temp_[param_id]->mutable_gpu_data(), temp_winograd_weight_[param_id]->mutable_gpu_data(), (double **)temp_winograd_weight_ptrs_[param_id]->mutable_gpu_data(),
+            WinogradGKronG<double>::getInstance(K)->get()->gpu_data(), temp_winograd_transform_[param_id]->mutable_gpu_data(), (double **)temp_winograd_transform_ptrs_[param_id]->mutable_gpu_data(),
+            temp_winograd, this->param_.winograd_sparsity_factor(), A->M, A->N, N*C);
+        }
       }
 
       Dtype *winograd_weights = temp_winograd_[param_id]->mutable_gpu_data();
