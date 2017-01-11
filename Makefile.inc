@@ -1,5 +1,5 @@
 #############################################################################
-# Copyright (c) 2015-2016, Intel Corporation                                #
+# Copyright (c) 2015-2017, Intel Corporation                                #
 # All rights reserved.                                                      #
 #                                                                           #
 # Redistribution and use in source and binary forms, with or without        #
@@ -143,8 +143,8 @@ IPO ?= 0
 ILP64 ?= 0
 BLAS ?= 0
 
-# Prefer to link statically against BLAS library
-BLAS_STATIC ?= $(STATIC)
+# Separate control on how to link against the BLAS library
+BLAS_STATIC ?= $(DEPSTATIC)
 ifneq (0,$(BLAS_STATIC))
   BLASLIBEXT ?= $(SLIBEXT)
 else
@@ -402,6 +402,16 @@ ifeq (1,$(GCC))
   endif
 endif
 
+# Too many ICEs with Clang hence we want to know if we are on Clang
+ifeq (0,$(GCC)) # not GCC
+ifeq (0,$(INTEL)) # not Intel
+ifeq (0,$(shell $(CC) -dM -E - < /dev/null 2> /dev/null | grep -q "__clang__"; echo "$$?"))
+  CLANG = 1
+endif
+endif
+endif
+CLANG ?= 0
+
 # Select code path (if not selected otherwise)
 CPUFLAGS = $(strip $(shell if [ -e /proc/cpuinfo ]; then \
     grep -m1 flags /proc/cpuinfo | cut -d: -f2-; \
@@ -411,11 +421,11 @@ CPUFLAGS = $(strip $(shell if [ -e /proc/cpuinfo ]; then \
       machdep.cpu.leaf7_features \
     | cut -d: -f2- | tr "\n" " " | tr [:upper:] [:lower:]; \
   fi))
-ifneq (1,$(SSE))
-ifneq (0,$(AVX))
+SSE ?= 0
+ifeq (0,$(SSE))
   ifeq (1,$(words $(filter avx512f,$(CPUFLAGS))))
     AVX ?= 3
-    SSE ?= 0
+    SSE = 0
     ifneq (0,$(words $(filter avx512er,$(CPUFLAGS)))) # KNL
       MIC ?= 1
     else # SKX
@@ -423,25 +433,23 @@ ifneq (0,$(AVX))
     endif
   else ifeq (2,$(words $(filter avx2 fma,$(CPUFLAGS))))
     AVX ?= 2
-    SSE ?= 0
+    SSE = 0
   else ifeq (1,$(words $(filter avx avx1.0,$(CPUFLAGS))))
     AVX ?= 1
-    SSE ?= 0
+    SSE = 0
   endif
-endif
-endif
-AVX ?= 0
-ifneq (0,$(SSE))
+else ifeq (1,$(SSE))
   ifeq (1,$(words $(filter sse4_2 sse4.2,$(CPUFLAGS))))
-    SSE ?= 4
+    SSE = 4
   else ifeq (1,$(words $(filter sse3,$(CPUFLAGS))))
-    SSE ?= 3
+    SSE = 3
   else #ifeq (,$(SSE))
-    SSE ?= 0
+    SSE = 0
   endif
 else ifneq (0,$(KNC))
   MPSS = 1
 endif
+AVX ?= 0
 
 ifneq (0,$(INTEL))
   SUITE = Intel Compiler
@@ -811,8 +819,11 @@ ifeq (,$(CTARGET))
 ifneq (0,$(shell echo "$$((3 > $(DBG)))"))
   ifneq (0,$(shell echo "$$((2 <= $(AVX)))"))
     ifeq (3,$(AVX))
+    ifneq (0,$(shell echo "$$((0 == $(CLANG) || 30500 <= $(CC_VERSION) || 0 == $(CC_VERSION)))"))
     ifeq (0,$(shell $(CC) -E -mavx512f -mavx512cd /dev/null 2> /dev/null > /dev/null; echo $$?))
       CTARGET = -mavx512f -mavx512cd
+      # fix for Clang
+      CTARGET += -mfma
       ifneq (,$(MIC)) # specified
         ifneq (0,$(MIC)) # MIC
           ifeq (0,$(shell $(CC) -E -mavx512pf -mavx512er /dev/null 2> /dev/null > /dev/null; echo $$?))
@@ -825,6 +836,7 @@ ifneq (0,$(shell echo "$$((3 > $(DBG)))"))
           endif
         endif
       endif
+    endif
     endif
     endif
     ifeq (,$(CTARGET)) # fall-back to AVX2

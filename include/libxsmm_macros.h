@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2013-2016, Intel Corporation                                **
+** Copyright (c) 2013-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -216,7 +216,7 @@
 #define LIBXSMM_FEQ(A, B) (!((A) < (B) || (A) > (B)))
 
 #if defined(_WIN32) && !defined(__GNUC__)
-# define LIBXSMM_ATTRIBUTE(...) __declspec(__VA_ARGS__)
+# define LIBXSMM_ATTRIBUTE(A) __declspec(A)
 # if defined(__cplusplus)
 #   define LIBXSMM_INLINE_ALWAYS __forceinline
 # else
@@ -225,12 +225,12 @@
 # define LIBXSMM_ALIGNED(DECL, N) LIBXSMM_ATTRIBUTE(align(N)) DECL
 # define LIBXSMM_CDECL __cdecl
 #elif defined(__GNUC__)
-# define LIBXSMM_ATTRIBUTE(...) __attribute__((__VA_ARGS__))
+# define LIBXSMM_ATTRIBUTE(A) __attribute__((A))
 # define LIBXSMM_INLINE_ALWAYS LIBXSMM_ATTRIBUTE(always_inline) LIBXSMM_INLINE
 # define LIBXSMM_ALIGNED(DECL, N) DECL LIBXSMM_ATTRIBUTE(aligned(N))
 # define LIBXSMM_CDECL LIBXSMM_ATTRIBUTE(cdecl)
 #else
-# define LIBXSMM_ATTRIBUTE(...)
+# define LIBXSMM_ATTRIBUTE(A)
 # define LIBXSMM_INLINE_ALWAYS LIBXSMM_INLINE
 # define LIBXSMM_ALIGNED(DECL, N)
 # define LIBXSMM_CDECL
@@ -364,16 +364,17 @@
 #endif
 
 #if defined(__GNUC__)
+# define LIBXSMM_CTOR_ATTRIBUTE LIBXSMM_ATTRIBUTE(constructor)
+# define LIBXSMM_DTOR_ATTRIBUTE LIBXSMM_ATTRIBUTE(destructor)
+#else
+# define LIBXSMM_CTOR_ATTRIBUTE
+# define LIBXSMM_DTOR_ATTRIBUTE
+#endif
+
+#if defined(__GNUC__)
 # define LIBXSMM_MAY_ALIAS LIBXSMM_ATTRIBUTE(__may_alias__)
 #else
 # define LIBXSMM_MAY_ALIAS
-#endif
-
-#if defined(NDEBUG)
-# define LIBXSMM_NDEBUG NDEBUG
-# define LIBXSMM_DEBUG(...)
-#else
-# define LIBXSMM_DEBUG(...) __VA_ARGS__
 #endif
 
 #if defined(_WIN32)

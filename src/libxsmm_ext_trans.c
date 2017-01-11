@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -60,10 +60,9 @@ LIBXSMM_API_DEFINITION int libxsmm_otrans_omp(void* out, const void* in, unsigne
 #if !defined(NDEBUG) /* library code is expected to be mute */
   static int error_once = 0;
 #endif
-  LIBXSMM_INIT
-
   assert(0 < typesize);
   if (ldi >= m && ldo >= n && 0 != out && 0 != in) {
+    LIBXSMM_INIT
     if (out != in) {
 #if defined(LIBXSMM_EXT_TASKS)
       if (0 != libxsmm_mt) { /* enable OpenMP support */

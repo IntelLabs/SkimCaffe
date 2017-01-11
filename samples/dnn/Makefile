@@ -25,7 +25,7 @@ CFLAGS = $(NULL)
 DFLAGS = $(NULL)
 IFLAGS = -I$(INCDIR) -I$(DEPDIR)/include
 
-BLAS = 1
+BLAS = 0
 OMP = 1
 SYM = 1
 
@@ -71,16 +71,28 @@ all: $(XFILES)
 compile: $(OBJECTS) $(FTNOBJS)
 
 $(OUTDIR)/layer_example_f32: $(OUTDIR)/.make $(BLDDIR)/layer_example_f32-c.o $(LIBNAME).$(LIBEXT)
-	$(LD) -o $@ $(BLDDIR)/layer_example_f32-c.o $(call abslib,$(LIBNAME).$(LIBEXT)) $(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
+	$(LD) -o $@ $(BLDDIR)/layer_example_f32-c.o \
+		$(call abslib,$(LIBNAME).$(LIBEXT)) \
+		$(call abslib,$(LIBNAME)noblas.$(LIBEXT)) \
+		$(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
 
 $(OUTDIR)/layer_example_i16i32: $(OUTDIR)/.make $(BLDDIR)/layer_example_i16i32-c.o $(LIBNAME).$(LIBEXT)
-	$(LD) -o $@ $(BLDDIR)/layer_example_i16i32-c.o $(call abslib,$(LIBNAME).$(LIBEXT)) $(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
+	$(LD) -o $@ $(BLDDIR)/layer_example_i16i32-c.o \
+		$(call abslib,$(LIBNAME).$(LIBEXT)) \
+		$(call abslib,$(LIBNAME)noblas.$(LIBEXT)) \
+		$(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
 
 $(OUTDIR)/layer_example_i8i16: $(OUTDIR)/.make $(BLDDIR)/layer_example_i8i16-c.o $(LIBNAME).$(LIBEXT)
-	$(LD) -o $@ $(BLDDIR)/layer_example_i8i16-c.o $(call abslib,$(LIBNAME).$(LIBEXT)) $(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
+	$(LD) -o $@ $(BLDDIR)/layer_example_i8i16-c.o \
+		$(call abslib,$(LIBNAME).$(LIBEXT)) \
+		$(call abslib,$(LIBNAME)noblas.$(LIBEXT)) \
+		$(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
 
 $(OUTDIR)/layer_example_i8i32: $(OUTDIR)/.make $(BLDDIR)/layer_example_i8i32-c.o $(LIBNAME).$(LIBEXT)
-	$(LD) -o $@ $(BLDDIR)/layer_example_i8i32-c.o $(call abslib,$(LIBNAME).$(LIBEXT)) $(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
+	$(LD) -o $@ $(BLDDIR)/layer_example_i8i32-c.o \
+		$(call abslib,$(LIBNAME).$(LIBEXT)) \
+		$(call abslib,$(LIBNAME)noblas.$(LIBEXT)) \
+		$(SLDFLAGS) $(LDFLAGS) $(CLDFLAGS)
 
 $(BLDDIR)/%-cpp.o: $(SRCDIR)/%.cpp .state $(BLDDIR)/.make $(HEADERS) $(ROOTDIR)/Makefile $(DEPDIR)/Makefile.inc
 	$(CXX) $(CXXFLAGS) $(DFLAGS) $(IFLAGS) $(CTARGET) -c $< -o $@
@@ -88,32 +100,28 @@ $(BLDDIR)/%-cpp.o: $(SRCDIR)/%.cpp .state $(BLDDIR)/.make $(HEADERS) $(ROOTDIR)/
 $(BLDDIR)/%-c.o: $(SRCDIR)/%.c .state $(BLDDIR)/.make $(HEADERS) $(ROOTDIR)/Makefile $(DEPDIR)/Makefile.inc
 	$(CC) $(CFLAGS) $(DFLAGS) $(IFLAGS) $(CTARGET) -c $< -o $@
 
-.PHONY: clean-minimal
-clean-minimal:
-	@rm -f $(OBJECTS) $(FTNOBJS)
-	@rm -f fit.log *.dat
-
 .PHONY: clean
-clean: clean-minimal
+clean:
 ifneq ($(abspath $(BLDDIR)),$(ROOTDIR))
 ifneq ($(abspath $(BLDDIR)),$(abspath .))
 	@rm -rf $(BLDDIR)
 endif
 endif
+ifneq (,$(wildcard $(BLDDIR))) # still exists
+	@rm -f $(OBJECTS) $(OBJECTX) $(FTNOBJS) $(FTNOBJX) *__genmod.* fit.log *.dat *.mhd
+	@rm -f $(BLDDIR)/*.gcno $(BLDDIR)/*.gcda $(BLDDIR)/*.gcov
+endif
+	@rm -f .make .state
 
 .PHONY: realclean
 realclean: clean
 ifneq ($(abspath $(OUTDIR)),$(ROOTDIR))
 ifneq ($(abspath $(OUTDIR)),$(abspath .))
 	@rm -rf $(OUTDIR)
-else
-	@rm -f $(XFILES)
 endif
-else
-	@rm -f $(XFILES)
 endif
-	@rm -f *.gcno *.gcda *.gcov
-	@rm -f $(OUTDIR)/libxsmm.$(DLIBEXT)
-	@rm -f $(OUTDIR)/*.bin
-	@rm -f .make .state
+ifneq (,$(wildcard $(OUTDIR))) # still exists
+	@rm -f $(OUTDIR)/libxsmm.$(DLIBEXT) $(OUTDIR)/*.stackdump
+	@rm -f $(XFILES) $(MODULES)
+endif
 

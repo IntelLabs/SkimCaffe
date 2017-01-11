@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -131,6 +131,25 @@ LIBXSMM_API_DEFINITION size_t libxsmm_dnn_typesize(libxsmm_dnn_datatype datatype
 }
 
 
+LIBXSMM_API_DEFINITION size_t libxsmm_dnn_get_simd_width(libxsmm_dnn_datatype datatype)
+{
+  size_t l_cl_width_bytes;
+  if ( libxsmm_get_target_archid() == LIBXSMM_X86_GENERIC ) {
+    l_cl_width_bytes = libxsmm_dnn_typesize(datatype);
+  } else if ( libxsmm_get_target_archid() == LIBXSMM_X86_SSE3 ||
+              libxsmm_get_target_archid() == LIBXSMM_X86_SSE4 ) {
+    l_cl_width_bytes = 16;
+  } else if ( libxsmm_get_target_archid() == LIBXSMM_X86_AVX2 ||
+              libxsmm_get_target_archid() == LIBXSMM_X86_AVX ) {
+    l_cl_width_bytes = 32;
+  } else {
+    l_cl_width_bytes = 64;
+  }
+
+  return l_cl_width_bytes/libxsmm_dnn_typesize(datatype);
+}
+
+
 LIBXSMM_API_DEFINITION libxsmm_dnn_conv_handle* libxsmm_dnn_create_conv_handle(
   libxsmm_dnn_conv_desc     conv_desc)
 {
@@ -171,10 +190,10 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_conv_handle* libxsmm_dnn_create_conv_handle_c
     handle->fuse_ops = conv_desc.fuse_ops;
     handle->options = conv_desc.options;
     /* derive additional values */
-    handle->ifhp = conv_desc.H;
-    handle->ifwp = conv_desc.W;
-    handle->ofh = (conv_desc.H - conv_desc.R) / conv_desc.u + 1;
-    handle->ofw = (conv_desc.W - conv_desc.S) / conv_desc.v + 1;
+    handle->ifhp = conv_desc.H + 2*conv_desc.pad_h_in;
+    handle->ifwp = conv_desc.W + 2*conv_desc.pad_w_in;
+    handle->ofh = (conv_desc.H + 2*conv_desc.pad_h - conv_desc.R) / conv_desc.u + 1;
+    handle->ofw = (conv_desc.W + 2*conv_desc.pad_w - conv_desc.S) / conv_desc.v + 1;
     handle->ofhp = handle->ofh + 2*conv_desc.pad_h_out;
     handle->ofwp = handle->ofw + 2*conv_desc.pad_w_out;
     handle->avx512avx2fallback = 0;
@@ -191,6 +210,8 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_conv_handle* libxsmm_dnn_create_conv_handle_c
     handle->upd_ofh_rb = 1;
     handle->fm_lp_block = 1;
     handle->upd_use_thread_fil = 0;
+    handle->upd_use_external_reduce = 0;
+    handle->filter_transposed = 0;
 
     /* Set algorithm to use */
     if (conv_desc.algo == LIBXSMM_DNN_CONV_ALGO_AUTO) {
@@ -216,46 +237,47 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_conv_handle(const l
 {
   libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
 
-  if (0 != handle) { /* it is not an error attempting to destroy a NULL-handle */
+  if (0 != handle) {
     /* deallocate data components; not an error to deallocate a NULL-pointer
        deallocate code known to be not registered; no index attached
        do not use libxsmm_release_kernel here! */
+
     if ( (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_MIC  ||
           libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CORE    ) && (handle->avx512avx2fallback == 0) ) {
-      libxsmm_xfree(handle->code_fwd[0].pmm);
-      libxsmm_xfree(handle->code_fwd[1].pmm);
-      libxsmm_xfree(handle->code_fwd[2].pmm);
-      libxsmm_xfree(handle->code_fwd[3].pmm);
-      libxsmm_xfree(handle->code_bwd[0].pmm);
+      libxsmm_free(handle->code_fwd[0].pmm);
+      libxsmm_free(handle->code_fwd[1].pmm);
+      libxsmm_free(handle->code_fwd[2].pmm);
+      libxsmm_free(handle->code_fwd[3].pmm);
+      libxsmm_free(handle->code_bwd[0].pmm);
       if ((handle->filter_format == LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) && (handle->buffer_format == LIBXSMM_DNN_CONV_FORMAT_LIBXSMM)) {
-        libxsmm_xfree(handle->code_bwd[1].pmm);
-        libxsmm_xfree(handle->code_bwd[2].pmm);
-        libxsmm_xfree(handle->code_bwd[3].pmm);
+        libxsmm_free(handle->code_bwd[1].pmm);
+        libxsmm_free(handle->code_bwd[2].pmm);
+        libxsmm_free(handle->code_bwd[3].pmm);
       }
-      libxsmm_xfree(handle->code_upd[0].pmm);
+      libxsmm_free(handle->code_upd[0].pmm);
       if ((handle->filter_format == LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) && (handle->buffer_format == LIBXSMM_DNN_CONV_FORMAT_LIBXSMM)) {
-        libxsmm_xfree(handle->code_upd[1].pmm);
-        libxsmm_xfree(handle->code_upd[2].pmm);
-        libxsmm_xfree(handle->code_upd[3].pmm);
-        libxsmm_xfree(handle->code_upd[4].pmm);
-        libxsmm_xfree(handle->code_upd[5].pmm);
+        libxsmm_free(handle->code_upd[1].pmm);
+        libxsmm_free(handle->code_upd[2].pmm);
+        libxsmm_free(handle->code_upd[3].pmm);
+        libxsmm_free(handle->code_upd[4].pmm);
+        libxsmm_free(handle->code_upd[5].pmm);
       }
     } else if ( (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2) || (handle->avx512avx2fallback != 0) ) {
-      libxsmm_xfree(handle->code_fwd[0].pmm);
+      libxsmm_free(handle->code_fwd[0].pmm);
       if (handle->fwd_ofw_rb_2 != 0) {
-        libxsmm_xfree(handle->code_fwd[1].pmm);
+        libxsmm_free(handle->code_fwd[1].pmm);
       }
-      libxsmm_xfree(handle->code_bwd[0].pmm);
-      libxsmm_xfree(handle->code_upd[0].pmm);
+      libxsmm_free(handle->code_bwd[0].pmm);
+      libxsmm_free(handle->code_upd[0].pmm);
     } else {
       /* no kernel was JITed */
     }
 
     /*Deallocate scratch in handle*/
-    if(handle->scratch1 != 0) libxsmm_xfree(handle->scratch1);
-    if(handle->scratch2 != 0) libxsmm_barrier_release((const libxsmm_barrier*)handle->scratch2);
-    if(handle->scratch3 != 0) libxsmm_xfree(handle->scratch3);
-    if(handle->scratch4 != 0) libxsmm_xfree(handle->scratch4);
+    libxsmm_free(handle->scratch1);
+    if (handle->scratch2 != 0 ) { libxsmm_barrier_release((const libxsmm_barrier*)handle->scratch2); }
+    libxsmm_free(handle->scratch3);
+    libxsmm_free(handle->scratch4);
 
     /* deallocate handle structure */
     free(/*remove constness*/(libxsmm_dnn_conv_handle*)handle);
@@ -265,45 +287,6 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_conv_handle(const l
   }
 
   return status;
-}
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_buffer* libxsmm_dnn_create_input_buffer(const libxsmm_dnn_conv_handle* handle)
-{
-  libxsmm_dnn_err_t status;
-  return libxsmm_dnn_create_input_buffer_check(handle, &status);
-}
-
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_buffer* libxsmm_dnn_create_input_buffer_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status)
-{
-  libxsmm_dnn_buffer* buffer = 0;
-
-  if (0 != handle) {
-    buffer = (libxsmm_dnn_buffer*)malloc(sizeof(libxsmm_dnn_buffer));
-
-    if (0 != buffer) { /* set properties of the buffer according to convolution handle */
-      buffer->N = handle->desc.N;
-      buffer->fmb = handle->blocksifm;
-      buffer->bfm = handle->ifmblock;
-      buffer->H = handle->ifhp;
-      buffer->W = handle->ifwp;
-      buffer->format = handle->buffer_format;
-      buffer->datatype = handle->datatype_in;
-      buffer->lpb = handle->fm_lp_block;
-      buffer->data = libxsmm_aligned_malloc( /* allocate raw data */
-        buffer->N * buffer->fmb * buffer->bfm * buffer->H * buffer->W * buffer->lpb * libxsmm_dnn_typesize(buffer->datatype),
-        LIBXSMM_ALIGNMENT);
-      if (0 == buffer->data) {
-        free(buffer);
-        buffer = 0;
-      }
-    }
-  }
-
-  assert(0 != status);
-  *status = 0 != buffer ? LIBXSMM_DNN_SUCCESS : LIBXSMM_DNN_ERR_CREATE_BUFFER;
-
-  return buffer;
 }
 
 
@@ -436,46 +419,6 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_conv_datalayout* libxsmm_dnn_get_input_buffer
 }
 
 
-LIBXSMM_API_DEFINITION libxsmm_dnn_buffer* libxsmm_dnn_create_output_buffer(const libxsmm_dnn_conv_handle* handle)
-{
-  libxsmm_dnn_err_t status;
-  return libxsmm_dnn_create_output_buffer_check(handle, &status);
-}
-
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_buffer* libxsmm_dnn_create_output_buffer_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status)
-{
-  libxsmm_dnn_buffer* buffer = 0;
-
-  if (0 != handle) {
-    buffer = (libxsmm_dnn_buffer*)malloc(sizeof(libxsmm_dnn_buffer));
-
-    if (0 != buffer) { /* set properties of the buffer according to convolution handle */
-      buffer->N = handle->desc.N;
-      buffer->fmb = handle->blocksofm;
-      buffer->bfm = handle->ofmblock;
-      buffer->H = handle->ofhp;
-      buffer->W = handle->ofwp;
-      buffer->format = handle->buffer_format;
-      buffer->lpb = 1;
-      buffer->datatype = handle->datatype_out;
-      buffer->data = libxsmm_aligned_malloc( /* allocate raw data, we always have a 4 byte wide type */
-        buffer->N * buffer->fmb * buffer->bfm * buffer->H * buffer->W * buffer->lpb * libxsmm_dnn_typesize(buffer->datatype),
-        LIBXSMM_ALIGNMENT);
-      if (0 == buffer->data) {
-        free(buffer);
-        buffer = 0;
-      }
-    }
-  }
-
-  assert(0 != status);
-  *status = 0 != buffer ? LIBXSMM_DNN_SUCCESS : LIBXSMM_DNN_ERR_CREATE_BUFFER;
-
-  return buffer;
-}
-
-
 LIBXSMM_API_DEFINITION libxsmm_dnn_buffer* libxsmm_dnn_link_output_buffer(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format)
 {
   libxsmm_dnn_err_t status;
@@ -595,7 +538,7 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_buffer(const libxsm
   if (0 != buffer) { /* it is not an error attempting to destroy a NULL-handle */
     /* deallocate data components; not an error to deallocate a NULL-pointer, just deallocate if it's LIBXSMM private data */
     if ( (buffer->format & LIBXSMM_DNN_CONV_FORMAT_PTR) == 0 ) {
-      libxsmm_xfree(buffer->data);
+      libxsmm_free(buffer->data);
     }
     /* deallocate handle structure */
     free(/*remove constness*/(libxsmm_dnn_buffer*)buffer);
@@ -605,47 +548,6 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_buffer(const libxsm
   }
 
   return status;
-}
-
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_filter* libxsmm_dnn_create_filter(const libxsmm_dnn_conv_handle* handle)
-{
-  libxsmm_dnn_err_t status;
-  return libxsmm_dnn_create_filter_check(handle, &status);
-}
-
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_filter* libxsmm_dnn_create_filter_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status)
-{
-  libxsmm_dnn_filter* filter = 0;
-
-  if (0 != handle) {
-    filter = (libxsmm_dnn_filter*)malloc(sizeof(libxsmm_dnn_filter));
-
-    if (0 != filter) { /* set properties of the buffer according to convolution handle */
-      filter->ifmb = handle->blocksifm;
-      filter->bifm = handle->ifmblock;
-      filter->ofmb = handle->blocksofm;
-      filter->bofm = handle->ofmblock;
-      filter->R = handle->desc.R;
-      filter->S = handle->desc.S;
-      filter->format = handle->filter_format;
-      filter->datatype = handle->datatype_in;
-      filter->lpb = handle->fm_lp_block;
-      filter->data = libxsmm_aligned_malloc( /* allocate raw data */
-        filter->ifmb * filter->bifm * filter->ofmb * filter->bofm * filter->R * filter->S * filter->lpb * libxsmm_dnn_typesize(filter->datatype),
-        LIBXSMM_ALIGNMENT);
-      if (0 == filter->data) {
-        free(filter);
-        filter = 0;
-      }
-    }
-  }
-
-  assert(0 != status);
-  *status = 0 != filter ? LIBXSMM_DNN_SUCCESS : LIBXSMM_DNN_ERR_CREATE_FILTER;
-
-  return filter;
 }
 
 
@@ -793,7 +695,7 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_filter(const libxsm
   if (0 != filter) { /* it is not an error attempting to destroy a NULL-handle */
     /* deallocate data components; not an error to deallocate a NULL-pointer */
     if ( (filter->format & LIBXSMM_DNN_CONV_FORMAT_PTR) == 0 ) {
-      libxsmm_xfree(filter->data);
+      libxsmm_free(filter->data);
     }
     /* deallocate handle structure */
     free(/*remove constness*/(libxsmm_dnn_filter*)filter);
@@ -806,49 +708,13 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_filter(const libxsm
 }
 
 
-LIBXSMM_API_DEFINITION libxsmm_dnn_bias* libxsmm_dnn_create_bias(const libxsmm_dnn_conv_handle* handle)
-{
-  libxsmm_dnn_err_t status;
-  return libxsmm_dnn_create_bias_check(handle, &status);
-}
-
-
-LIBXSMM_API_DEFINITION libxsmm_dnn_bias* libxsmm_dnn_create_bias_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status)
-{
-  libxsmm_dnn_bias* bias = 0;
-
-  if (0 != handle) {
-    bias = (libxsmm_dnn_bias*)malloc(sizeof(libxsmm_dnn_bias));
-
-    if (0 != bias) { /* set properties of the buffer according to convolution handle */
-      bias->fmb = handle->blocksifm;
-      bias->bfm = handle->ifmblock;
-      bias->datatype = handle->datatype_out;
-      bias->lpb = handle->fm_lp_block;
-      bias->data = libxsmm_aligned_malloc( /* allocate raw data, we always have a 4 byte wide type */
-        bias->fmb * bias->bfm * bias->lpb * libxsmm_dnn_typesize(bias->datatype),
-        LIBXSMM_ALIGNMENT);
-      if (0 == bias->data) {
-        free(bias);
-        bias = 0;
-      }
-    }
-  }
-
-  assert(0 != status);
-  *status = 0 != bias ? LIBXSMM_DNN_SUCCESS : LIBXSMM_DNN_ERR_CREATE_BIAS;
-
-  return bias;
-}
-
-
 LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_destroy_bias(const libxsmm_dnn_bias* bias)
 {
   libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
 
   if (0 != bias) { /* it is not an error attempting to destroy a NULL-handle */
     /* deallocate data components; not an error to deallocate a NULL-pointer */
-    libxsmm_xfree(bias->data);
+    libxsmm_free(bias->data);
     /* deallocate handle structure */
     free(/*remove constness*/(libxsmm_dnn_bias*)bias);
   }
@@ -883,33 +749,30 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_copyin_buffer(const libxsmm
   if (0 != buffer) {
     switch (in_format) {
       case LIBXSMM_DNN_CONV_FORMAT_NCHW: {
-        switch (buffer->format) {
-          case LIBXSMM_DNN_CONV_FORMAT_LIBXSMM: {
-            switch (buffer->datatype) {
-              case LIBXSMM_DNN_DATATYPE_F32: {
-                typedef float element_type;
-#               include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I32: {
-                typedef int element_type;
-#               include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I16: {
-                typedef short element_type;
-#               include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I8: {
-                typedef char element_type;
-#               include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
-              } break;
-              default: {
-                status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
-              }
+        if ( (buffer->format & LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) > 0 ) {
+          switch (buffer->datatype) {
+            case LIBXSMM_DNN_DATATYPE_F32: {
+              typedef float element_type;
+#             include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I32: {
+              typedef int element_type;
+#             include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I16: {
+              typedef short element_type;
+#             include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I8: {
+              typedef char element_type;
+#             include "template/libxsmm_dnn_buffer_copy_in_nchw.tpl.c"
+            } break;
+            default: {
+              status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
             }
-          } break;
-          default: {
-            status = LIBXSMM_DNN_ERR_UNSUPPORTED_DST_FORMAT;
           }
+        } else {
+          status = LIBXSMM_DNN_ERR_UNSUPPORTED_DST_FORMAT;
         }
       } break;
       default: {
@@ -971,33 +834,30 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_copyout_buffer(const libxsm
   if (0 != buffer) {
     switch (out_format) {
       case LIBXSMM_DNN_CONV_FORMAT_NCHW: {
-        switch (buffer->format) {
-          case LIBXSMM_DNN_CONV_FORMAT_LIBXSMM: {
-            switch (buffer->datatype) {
-              case LIBXSMM_DNN_DATATYPE_F32: {
-                typedef float element_type;
-#               include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I32: {
-                typedef int element_type;
-#               include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I16: {
-                typedef short element_type;
-#               include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I8: {
-                typedef char element_type;
-#               include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
-              } break;
-              default: {
-                status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
-              }
+        if ( (buffer->format & LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) > 0 ) {
+          switch (buffer->datatype) {
+            case LIBXSMM_DNN_DATATYPE_F32: {
+              typedef float element_type;
+#             include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I32: {
+              typedef int element_type;
+#             include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I16: {
+              typedef short element_type;
+#             include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I8: {
+              typedef char element_type;
+#             include "template/libxsmm_dnn_buffer_copy_out_nchw.tpl.c"
+            } break;
+            default: {
+              status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
             }
-          } break;
-          default: {
-            status = LIBXSMM_DNN_ERR_UNSUPPORTED_SRC_FORMAT;
           }
+        } else {
+          status = LIBXSMM_DNN_ERR_UNSUPPORTED_SRC_FORMAT;
         }
       } break;
       default: {
@@ -1020,29 +880,26 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_copyin_filter(const libxsmm
   if (0 != filter) {
     switch (in_format) {
       case LIBXSMM_DNN_CONV_FORMAT_KCRS: {
-        switch (filter->format) {
-          case LIBXSMM_DNN_CONV_FORMAT_LIBXSMM: {
-            switch (filter->datatype) {
-              case LIBXSMM_DNN_DATATYPE_F32: {
-                typedef float element_type;
-#               include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I16: {
-                typedef short element_type;
-#               include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I8: {
-                typedef char element_type;
-#               include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
-              } break;
-              default: {
-                status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
-              }
+        if ( (filter->format & LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) > 0 ) {
+          switch (filter->datatype) {
+            case LIBXSMM_DNN_DATATYPE_F32: {
+              typedef float element_type;
+#             include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I16: {
+              typedef short element_type;
+#             include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I8: {
+              typedef char element_type;
+#             include "template/libxsmm_dnn_filter_copy_in_kcrs.tpl.c"
+            } break;
+            default: {
+              status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
             }
-          } break;
-          default: {
-            status = LIBXSMM_DNN_ERR_UNSUPPORTED_DST_FORMAT;
           }
+        } else {
+          status = LIBXSMM_DNN_ERR_UNSUPPORTED_DST_FORMAT;
         }
       } break;
       default: {
@@ -1065,33 +922,30 @@ LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_copyout_filter(const libxsm
   if (0 != filter) {
     switch (out_format) {
       case LIBXSMM_DNN_CONV_FORMAT_KCRS: {
-        switch (filter->format) {
-          case LIBXSMM_DNN_CONV_FORMAT_LIBXSMM: {
-            switch (filter->datatype) {
-              case LIBXSMM_DNN_DATATYPE_F32: {
-                typedef float element_type;
-#               include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I32: {
-                typedef int element_type;
-#               include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I16: {
-                typedef short element_type;
-#               include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
-              } break;
-              case LIBXSMM_DNN_DATATYPE_I8: {
-                typedef char element_type;
-#               include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
-              } break;
-              default: {
-                status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
-              }
+        if ( (filter->format & LIBXSMM_DNN_CONV_FORMAT_LIBXSMM) > 0 ) {
+          switch (filter->datatype) {
+            case LIBXSMM_DNN_DATATYPE_F32: {
+              typedef float element_type;
+#             include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I32: {
+              typedef int element_type;
+#             include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I16: {
+              typedef short element_type;
+#             include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
+            } break;
+            case LIBXSMM_DNN_DATATYPE_I8: {
+              typedef char element_type;
+#             include "template/libxsmm_dnn_filter_copy_out_kcrs.tpl.c"
+            } break;
+            default: {
+              status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
             }
-          } break;
-          default: {
-            status = LIBXSMM_DNN_ERR_UNSUPPORTED_SRC_FORMAT;
           }
+        } else {
+          status = LIBXSMM_DNN_ERR_UNSUPPORTED_SRC_FORMAT;
         }
       } break;
       default: {
@@ -1330,6 +1184,144 @@ LIBXSMM_API_DEFINITION void libxsmm_dnn_convolve(libxsmm_dnn_conv_handle* handle
 #else
   internal_convolve_st(handle, kind, 0/*start_thread*/, 0/*tid*/);
 #endif
+}
+
+
+LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_transpose_filter(libxsmm_dnn_conv_handle* handle) {
+  libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
+  int ofm1, ifm1, kj, ki, ifm2, ofm2;
+
+  /* check if we have input, output and filter */
+  if (handle->input == 0 || handle->output == 0 || handle->filter == 0) {
+    status = LIBXSMM_DNN_ERR_DATA_NOT_BOUND;
+    return status;
+  }
+
+  /* check that filter is in RSCK storage */
+  if ( (handle->filter_format & LIBXSMM_DNN_CONV_FORMAT_RSCK) == 0 ) {
+    status = LIBXSMM_DNN_ERR_MISMATCH_FILTER;
+    return status;
+  }
+
+  /* check that we are in FP32 */
+  if (handle->datatype_in == LIBXSMM_DNN_DATATYPE_F32 && handle->datatype_out == LIBXSMM_DNN_DATATYPE_F32 ) {
+    LIBXSMM_VLA_DECL(6, float, wt, (float*)handle->filter->data, handle->desc.S, handle->blocksifm, handle->ifmblock, handle->blocksofm, handle->ofmblock);
+    LIBXSMM_VLA_DECL(6, float, tr_wt, (float*)handle->scratch1, handle->desc.S, handle->blocksofm, handle->ofmblock, handle->blocksifm, handle->ifmblock);
+
+    for (ofm1 = 0; ofm1 < handle->blocksofm; ++ofm1) {
+      for (ifm1 = 0; ifm1 < handle->blocksifm; ++ifm1) {
+        for(kj=0; kj < handle->desc.R; ++kj) {
+          for(ki=0; ki < handle->desc.S; ++ki) {
+            for (ofm2 = 0; ofm2 < handle->ofmblock; ++ofm2) {
+              for (ifm2 = 0; ifm2 < handle->ifmblock; ++ifm2) {
+                LIBXSMM_VLA_ACCESS(6, tr_wt, kj, ki, ofm1, ofm2, ifm1, ifm2, handle->desc.S, handle->blocksofm, handle->ofmblock, handle->blocksifm, handle->ifmblock) =
+                  LIBXSMM_VLA_ACCESS(6, wt,  kj, ki, ifm1, ifm2, ofm1, ofm2, handle->desc.S, handle->blocksifm, handle->ifmblock, handle->blocksofm, handle->ofmblock);
+              }
+            }
+          }
+        }
+      }
+    }
+    handle->filter_transposed = 1;
+    return status;
+  } else {
+    status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
+    return status;
+  }
+}
+
+
+LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_reduce_wu_filters(libxsmm_dnn_conv_handle* handle) {
+  libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
+  int i, j, filter_size;
+
+  /* check if we have input, output and filter */
+  if (handle->input == 0 || handle->output == 0 || handle->filter == 0) {
+    status = LIBXSMM_DNN_ERR_DATA_NOT_BOUND;
+    return status;
+  }
+
+  /* calculate filter size */
+  filter_size = handle->blocksofm * handle->blocksifm * handle->desc.R * handle->desc.S * handle->ofmblock * handle->ifmblock;
+
+  /* check that we are in FP32 */
+  if (handle->datatype_in == LIBXSMM_DNN_DATATYPE_F32 && handle->datatype_out == LIBXSMM_DNN_DATATYPE_F32 ) {
+    if (handle->upd_use_external_reduce != 0) {
+      float* filter_ptr = (float*)handle->filter->data;
+      for ( i = 0; i < handle->desc.threads; i++ ) {
+        float* tmp_filter_ptr = ((float*)handle->scratch4) + (i*filter_size);
+        for ( j = 0; j < filter_size; j++) {
+          filter_ptr[j] += tmp_filter_ptr[j];
+        }
+      }
+    }
+  } else {
+    status = LIBXSMM_DNN_ERR_UNSUPPORTED_DATATYPE;
+  }
+
+  return status;
+}
+
+
+LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_get_codegen_success(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind) {
+  libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
+
+  if (0 != handle) {
+    switch (kind) {
+      case LIBXSMM_DNN_CONV_KIND_FWD: {
+        if (handle->code_fwd[0].xconv.sconv == 0) {
+          status = LIBXSMM_DNN_WARN_FALLBACK;
+        }
+      } break;
+      case LIBXSMM_DNN_CONV_KIND_BWD: {
+        if (handle->code_bwd[0].xconv.sconv == 0) {
+          status = LIBXSMM_DNN_WARN_FALLBACK;
+        }
+      } break;
+      case LIBXSMM_DNN_CONV_KIND_UPD: {
+        if (handle->code_upd[0].xconv.sconv == 0) {
+          status = LIBXSMM_DNN_WARN_FALLBACK;
+        }
+      } break;
+      default: {
+        status = LIBXSMM_DNN_ERR_INVALID_KIND;
+      }
+    }
+  } else {
+    status = LIBXSMM_DNN_ERR_INVALID_HANDLE;
+  }
+
+  return status;
+}
+
+
+LIBXSMM_API_DEFINITION libxsmm_dnn_err_t libxsmm_dnn_get_parallel_tasks(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind, unsigned int* num_tasks) {
+  libxsmm_dnn_err_t status = LIBXSMM_DNN_SUCCESS;
+
+  if (0 != handle) {
+    switch (kind) {
+      case LIBXSMM_DNN_CONV_KIND_FWD: {
+        *num_tasks = handle->desc.N * handle->blocksofm;
+      } break;
+      case LIBXSMM_DNN_CONV_KIND_BWD: {
+        *num_tasks = handle->desc.N * handle->blocksifm;
+      } break;
+      case LIBXSMM_DNN_CONV_KIND_UPD: {
+        if (handle->upd_use_thread_fil > 0) {
+          *num_tasks = handle->desc.N * handle->blocksifm * handle->blocksofm;
+        } else {
+          *num_tasks = handle->blocksifm * handle->blocksofm;
+        }
+      } break;
+      default: {
+        status = LIBXSMM_DNN_ERR_INVALID_KIND;
+      }
+    }
+  } else {
+    status = LIBXSMM_DNN_ERR_INVALID_HANDLE;
+  }
+
+  return status;
 }
 
 

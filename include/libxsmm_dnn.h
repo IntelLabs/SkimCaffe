@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -149,8 +149,10 @@ typedef struct LIBXSMM_RETARGETABLE libxsmm_dnn_conv_desc {
   int S;                                       /* width of filter kernel */
   int u;                                       /* vertical stride */
   int v;                                       /* horizontal stride */
-  int pad_h_in;                                /* height of zero-padding in input buffer, ignored */
-  int pad_w_in;                                /* width of zero-padding in input buffer, ignored */
+  int pad_h;                                   /* height of logical rim padding to input for adjusting output height */
+  int pad_w;                                   /* width of logical rim padding to input for adjusting output width */
+  int pad_h_in;                                /* height of zero-padding in input buffer, must equal to pad_h for direct conv */
+  int pad_w_in;                                /* width of zero-padding in input buffer, must equal to pad_w for direct conv */
   int pad_h_out;                               /* height of zero-padding in output buffer */
   int pad_w_out;                               /* width of zero-padding in output buffer */
   int threads;                                 /* number of threads to use when running convolution */
@@ -166,6 +168,7 @@ typedef struct LIBXSMM_RETARGETABLE libxsmm_dnn_conv_desc {
 /** get string of error code */
 LIBXSMM_API const char* libxsmm_dnn_get_error(libxsmm_dnn_err_t code);
 LIBXSMM_API size_t libxsmm_dnn_typesize(libxsmm_dnn_datatype datatype);
+LIBXSMM_API size_t libxsmm_dnn_get_simd_width(libxsmm_dnn_datatype datatype);
 
 /** Create a handle (non-NULL if successful), and pre-build all JIT-code versions. */
 LIBXSMM_API libxsmm_dnn_conv_handle* libxsmm_dnn_create_conv_handle(
@@ -179,18 +182,10 @@ LIBXSMM_API libxsmm_dnn_conv_handle* libxsmm_dnn_create_conv_handle_check(
 LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_destroy_conv_handle(const libxsmm_dnn_conv_handle* handle);
 
 /** Create buffers, filters and bias (non-NULL if successful) */
-LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_create_input_buffer(const libxsmm_dnn_conv_handle* handle);
-LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_create_output_buffer(const libxsmm_dnn_conv_handle* handle);
-LIBXSMM_API libxsmm_dnn_filter* libxsmm_dnn_create_filter(const libxsmm_dnn_conv_handle* handle);
-LIBXSMM_API libxsmm_dnn_bias*   libxsmm_dnn_create_bias(const libxsmm_dnn_conv_handle* handle);
 LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_link_input_buffer(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format);
 LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_link_output_buffer(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format);
 LIBXSMM_API libxsmm_dnn_filter* libxsmm_dnn_link_filter(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format);
 
-LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_create_input_buffer_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status);
-LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_create_output_buffer_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status);
-LIBXSMM_API libxsmm_dnn_filter* libxsmm_dnn_create_filter_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status);
-LIBXSMM_API libxsmm_dnn_bias*   libxsmm_dnn_create_bias_check(const libxsmm_dnn_conv_handle* handle, libxsmm_dnn_err_t* status);
 LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_link_input_buffer_check(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format, libxsmm_dnn_err_t* status);
 LIBXSMM_API libxsmm_dnn_buffer* libxsmm_dnn_link_output_buffer_check(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format, libxsmm_dnn_err_t* status);
 LIBXSMM_API libxsmm_dnn_filter* libxsmm_dnn_link_filter_check(const libxsmm_dnn_conv_handle* handle, const void* data, libxsmm_dnn_conv_format in_format, libxsmm_dnn_err_t* status);
@@ -242,6 +237,10 @@ LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_copyout_filter(const libxsmm_dnn_filte
 
 /** Run the convolution identified by the handle; may use threads internally. */
 LIBXSMM_API void libxsmm_dnn_convolve(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind);
+LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_transpose_filter(libxsmm_dnn_conv_handle* handle);
+LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_reduce_wu_filters(libxsmm_dnn_conv_handle* handle);
+LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_get_codegen_success(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind);
+LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_get_parallel_tasks(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind, unsigned int* num_tasks);
 
 /** Run the convolution identified by the handle; takes a thread id. */
 LIBXSMM_API libxsmm_dnn_err_t libxsmm_dnn_convolve_st(libxsmm_dnn_conv_handle* handle, libxsmm_dnn_conv_kind kind,
