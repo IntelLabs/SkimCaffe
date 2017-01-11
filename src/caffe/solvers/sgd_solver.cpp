@@ -1331,7 +1331,7 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
         A->get()->gpu_data(),
         (Dtype)0, winograd_weights);
 
-      caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights, thre);
+      caffe_gpu_if_zerout(N*C*M*M, winograd_weights, winograd_weights, 0);
       caffe_gpu_asum(N*C*M*M, winograd_weights, &sparsity);
       sparsity = sparsity*100./(N*C*M*M);
 #else
