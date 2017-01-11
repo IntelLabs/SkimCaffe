@@ -7,6 +7,11 @@
 #include "caffe/layer.hpp"
 #include "caffe/proto/caffe.pb.h"
 
+#define CAFFE_USE_LIBXSMM_SPMDM
+#ifdef CAFFE_USE_LIBXSMM_SPMDM
+#include "libxsmm.h"
+#endif
+
 namespace caffe {
 
 /**
@@ -46,22 +51,15 @@ class InnerProductReLUDropoutLayer : public Layer<Dtype> {
   bool bias_term_;
   Blob<Dtype> bias_multiplier_;
   bool transpose_;  ///< if true, assume transposed weights
-
-  Dtype *bottom_values_;
-  int *bottom_j_;
-  int *bottom_i_;
-
-  Dtype *top_values_;
-  int *top_j_;
-  int *top_i_;
-
-  Dtype *weight_values_;
-  int *weight_j_;
-  int *weight_i_;
-
+#ifdef CAFFE_USE_LIBXSMM_SPMDM
+  libxsmm_spmdm_handle libxsmm_spmdm_handle_;
+  libxsmm_CSR_sparseslice *libxsmm_csr_weight_;
+  int nnz_weight_;
+#else
   Dtype *weight_values_blocked_;
   int *weight_j_blocked_;
   int *weight_i_blocked_;
+#endif
 
   Dtype *bottom_transposed_;
 };

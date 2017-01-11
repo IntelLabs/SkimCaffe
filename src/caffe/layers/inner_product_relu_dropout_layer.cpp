@@ -20,11 +20,10 @@ namespace caffe {
 template<typename Dtype>
 InnerProductReLUDropoutLayer<Dtype>::InnerProductReLUDropoutLayer(const LayerParameter& param) :
     Layer<Dtype>(param),
-    bottom_values_(NULL), bottom_j_(NULL), bottom_i_(NULL),
-    top_values_(NULL), top_j_(NULL), top_i_(NULL),
-    weight_values_(NULL), weight_j_(NULL), weight_i_(NULL),
-    bottom_transposed_(NULL),
-    weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL)
+#ifndef CAFFE_USE_LIBXSMM_SPMDM
+    weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL),
+#endif
+    bottom_transposed_(NULL)
 {
 
 }
@@ -32,22 +31,15 @@ InnerProductReLUDropoutLayer<Dtype>::InnerProductReLUDropoutLayer(const LayerPar
 template<typename Dtype>
 InnerProductReLUDropoutLayer<Dtype>::~InnerProductReLUDropoutLayer()
 {
-  free(bottom_values_);
-  free(bottom_j_);
-  free(bottom_i_);
   free(bottom_transposed_);
 
-  free(top_values_);
-  free(top_j_);
-  free(top_i_);
-
-  free(weight_values_);
-  free(weight_j_);
-  free(weight_i_);
-
+#ifdef CAFFE_USE_LIBXSMM_SPMDM
+  libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
+#else
   free(weight_values_blocked_);
   free(weight_j_blocked_);
   free(weight_i_blocked_);
+#endif
 }
 
 template<>
@@ -70,17 +62,42 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
 	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
 	}
 
-	posix_memalign((void **)&weight_i_, 4096, sizeof(int)*(std::max(K_, N_) + 1));
-	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
-	posix_memalign((void **)&weight_values_, 4096, sizeof(float)*K_*N_);
-
   caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode) {
     if (!transpose_) {
+      if (!bias_term_) LOG(FATAL) << "SPMDM mode only works with bias term";
       if (this->layer_param_.relu_param().negative_slope() != 0) {
         LOG(FATAL) << "InnerProduct layer fused with ReLU in SPMDM mode only works with ReLU using 0 negative slop";
       }
+
+#ifdef CAFFE_USE_LIBXSMM_SPMDM
+      libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
+
+      int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
+#pragma omp parallel for
+      for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+        libxsmm_spmdm_createSparseSlice_fp32_thread(
+            &libxsmm_spmdm_handle_, 'N' /*transA*/,
+            this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
+      }
+
+      nnz_weight_ = 0;
+      for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+        int kb = i/libxsmm_spmdm_handle_.mb;
+        int mb = i%libxsmm_spmdm_handle_.mb;
+        int nrows = std::min((mb + 1)*libxsmm_spmdm_handle_.bm, libxsmm_spmdm_handle_.m) - mb*libxsmm_spmdm_handle_.bm;
+        nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
+      }
+
+#ifndef NDEBUG
+      int nnz_ref = 0;
+      for (int i = 0; i < N_*K_; ++i) {
+        if (this->blobs_[0]->cpu_data()[i] != 0.) ++nnz_ref;
+      }
+      assert(nnz_weight_ == nnz_ref);
+#endif
+#else
       if (M_%VLEN != 0) {
         LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires batch size to be a multiple of " << VLEN;
       }
@@ -120,6 +137,7 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
           }
         }
       }
+#endif
     }
     else {
       LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";
@@ -128,14 +146,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
     LOG(FATAL) << "SPGEMM mode is not supported yet";
 	}
-
-  posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
-  posix_memalign((void **)&bottom_j_, 4096, sizeof(int)*M_*K_);
-  posix_memalign((void **)&bottom_values_, 4096, sizeof(float)*M_*K_);
-
-  posix_memalign((void **)&top_i_, 4096, sizeof(int)*(std::max(M_, N_) + 1));
-  posix_memalign((void **)&top_j_, 4096, sizeof(int)*M_*N_);
-  posix_memalign((void **)&top_values_, 4096, sizeof(float)*M_*N_);
 
   posix_memalign((void **)&bottom_transposed_, 4096, sizeof(int)*M_*std::max(K_, N_));
 
@@ -251,6 +261,47 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
   caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
+#ifdef CAFFE_USE_LIBXSMM_SPMDM
+    double t = omp_get_wtime();
+
+    int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
+#pragma omp parallel for
+    for (int i = 0; i < num_compute_blocks; ++i) {
+      float alpha = 1, beta = 0;
+      libxsmm_spmdm_compute_fp32_thread(
+          &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'Y' : 'N' /*transB*/,
+          &alpha, libxsmm_csr_weight_,
+          bottom_data,
+          &beta, top_data,
+          i, omp_get_thread_num(), omp_get_num_threads());
+    }
+
+    t = omp_get_wtime() - t;
+    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*nnz_weight_*M_/t/1e9;
+
+    if (bias_term_) {
+      // JSP: common path for AlexNet
+      caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
+          bias_multiplier_.cpu_data(),
+          this->blobs_[1]->cpu_data(), (float)1., top_data);
+    }
+
+    const int count = top[0]->count();
+    float negative_slope = this->layer_param_.relu_param().negative_slope();
+    if (0 == negative_slope) {
+#pragma omp parallel for
+      for (int i = 0; i < count; ++i) {
+        top_data[i] = std::max(top_data[i], float(0));
+      }
+    }
+    else {
+#pragma omp parallel for
+      for (int i = 0; i < count; ++i) {
+        top_data[i] = std::max(top_data[i], float(0))
+            + negative_slope * std::min(top_data[i], float(0));
+      }
+    }
+#else
     if (layerparam.inner_product_param().spmdm_transpose_in()) {
       mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
     }
@@ -268,6 +319,7 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
         num_of_A_col_blocks);
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[num_of_A_col_blocks*N_]*M_/t/1e9;
+#endif
 
     if (layerparam.inner_product_param().spmdm_transpose_out()) {
       memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
