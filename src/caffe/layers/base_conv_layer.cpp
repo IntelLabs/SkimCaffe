@@ -642,6 +642,7 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     }
   }
   col_buffer_.Reshape(col_buffer_shape_);
+  col_buffer_.cpu_data();
 
   if(!reverse_dimensions()){
 	  col_buf_mask_.Reshape(1,1,1,kernel_dim_*group_);
