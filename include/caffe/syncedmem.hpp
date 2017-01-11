@@ -35,6 +35,25 @@ inline void CaffeFreeHost(void* ptr, bool use_cuda) {
   free(ptr);
 }
 
+// Base class
+struct PrvMemDescr {
+  virtual ~PrvMemDescr() {}
+  virtual void convert_from_prv(void* cpu_ptr) = 0;
+  virtual void convert_to_prv(void* cpu_ptr) = 0;
+  virtual void convert_from_other(shared_ptr<PrvMemDescr> other) = 0;
+  virtual bool on_to_cpu() { return false; }
+  virtual void* prv_ptr() = 0;
+  // returns true for matching layouts
+  virtual bool layout_compare(shared_ptr<PrvMemDescr> other) = 0;
+  virtual size_t prv_count() = 0;
+  virtual size_t prv_size() = 0;  // TODO: do we need both count() and size()?
+  // This might help using prv_ptr_ by different accelerators/engines
+  enum PrvDescrType {
+    PRV_DESCR_MKL2017,
+    PRV_DESCR_MKLDNN
+  };
+  virtual PrvDescrType get_descr_type() = 0;
+};
 
 /**
  * @brief Manages memory allocation and synchronization between the host (CPU)
