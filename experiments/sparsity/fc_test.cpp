@@ -78,6 +78,10 @@ int main(int argc, const char *argv[])
   int C_col_block_size = VLEN*CSRMM_REG_BLOCK_SIZE;
   int num_of_C_col_partitions = (nbatch + C_col_block_size - 1)/C_col_block_size;
     // C col block size -> AVX512: 256/(16*4) = 4, AVX2: 256/(8*8) = 4, SSE: 64/(4*8) = 2
+  if (nthreads < num_of_C_col_partitions) {
+    C_col_block_size = (nbatch + nthreads - 1)/nthreads;
+    num_of_C_col_partitions = (nbatch + C_col_block_size - 1)/C_col_block_size;
+  }
   if (nthreads%num_of_C_col_partitions != 0) {
     fprintf(stderr, "num_of_C_col_partitions %d should divide # of threads %d\n", num_of_C_col_partitions, nthreads);
     return -1;
