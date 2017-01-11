@@ -180,6 +180,18 @@ void ReLUPoolingLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 
 #ifdef CPU_ONLY
 STUB_GPU(ReLUPoolingLayer);
+#else
+template <typename Dtype>
+void ReLUPoolingLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
+      const vector<Blob<Dtype>*>& top) {
+  NOT_IMPLEMENTED;
+}
+
+template <typename Dtype>
+void ReLUPoolingLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+  NOT_IMPLEMENTED;
+}
 #endif
 
 INSTANTIATE_CLASS(ReLUPoolingLayer);
