@@ -316,7 +316,7 @@ layer {
       type: "constant"
       value: 0
     }
-    # gemm_mode: SPMDM # Don't have enough sparsity in fc8 yet, but will have enough soon.
+    gemm_mode: SPMDM
   }
 }
 layer {
