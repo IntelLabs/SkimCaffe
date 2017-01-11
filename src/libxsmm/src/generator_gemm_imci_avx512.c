@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2015-2016, Intel Corporation                                **
+** Copyright (c) 2015-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -36,7 +36,7 @@
 #include "generator_x86_instructions.h"
 #include "generator_common.h"
 
-#include <libxsmm_cpuid.h>
+#include <libxsmm_intrinsics_x86.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

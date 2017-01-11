@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2015-2016, Intel Corporation                                **
+** Copyright (c) 2015-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -154,7 +154,9 @@ typedef enum libxsmm_dnn_conv_option {
   /* we get default settings */
   LIBXSMM_DNN_CONV_OPTION_NONE = 0,
   /* activations are stored unsigned */
-  LIBXSMM_DNN_CONV_OPTION_ACTIVATION_UNSIGNED = 1
+  LIBXSMM_DNN_CONV_OPTION_ACTIVATION_UNSIGNED = 1,
+  /* reduce filters externally to op */
+  LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE = 2
 } libxsmm_dnn_conv_option;
 
 /** Structure storing the convolution argument description. */

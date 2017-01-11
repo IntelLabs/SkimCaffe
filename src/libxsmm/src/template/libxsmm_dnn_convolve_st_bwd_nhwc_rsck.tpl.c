@@ -1,5 +1,5 @@
 /******************************************************************************
- ** Copyright (c) 2016, Intel Corporation                                     **
+ ** Copyright (c) 2016-2017, Intel Corporation                                **
  ** All rights reserved.                                                      **
  **                                                                           **
  ** Redistribution and use in source and binary forms, with or without        **
@@ -28,7 +28,7 @@
  ******************************************************************************/
 /* Rajkishore Barik (Intel Corp.)
  ******************************************************************************/
-int imgifm1, img, ofm1, ifm1, oj, ij, kj, ki, ifm2, ofm2, ifm1ofm1;
+int imgifm1, img, ofm1, ifm1, oj, ij, ii, kj, ki, ifm2, ofm2, ifm1ofm1;
 
 /* computing first logical thread */
 const int ltid = tid - start_thread;
@@ -63,25 +63,27 @@ element_filter_type *l_wt;
 element_output_type* l_output;
 
 /* lazy barrier init */
-libxsmm_barrier_init((libxsmm_barrier*)handle->scratch2, ltid);
+if (handle->filter_transposed == 0) {
+  libxsmm_barrier_init((libxsmm_barrier*)handle->scratch2, ltid);
 
-for (ifm1ofm1 = transpose_thr_begin; ifm1ofm1 < transpose_thr_end; ++ifm1ofm1) {
-  ofm1 = ifm1ofm1/handle->blocksifm;
-  ifm1 = ifm1ofm1%handle->blocksifm;
-  for(kj=0; kj < handle->desc.R; ++kj) {
-    for(ki=0; ki < handle->desc.S; ++ki) {
-      /* TODO: enable this later */
-      /*transpose<VLEN,VLEN>(&wt[ofm1][ifm1][kj][ki][0][0],&tr_wt[ofm1][ifm1][kj][ki][0][0]);*/
-      for (ofm2 = 0; ofm2 < handle->ofmblock; ++ofm2) {
-        for (ifm2 = 0; ifm2 < handle->ifmblock; ++ifm2) {
-          LIBXSMM_VLA_ACCESS(6, tr_wt, kj, ki, ofm1, ofm2, ifm1, ifm2, handle->desc.S, handle->blocksofm, handle->ofmblock, handle->blocksifm, handle->ifmblock) =
-            LIBXSMM_VLA_ACCESS(6, wt,  kj, ki, ifm1, ifm2, ofm1, ofm2, handle->desc.S, handle->blocksifm, handle->ifmblock, handle->blocksofm, handle->ofmblock);
+  for (ifm1ofm1 = transpose_thr_begin; ifm1ofm1 < transpose_thr_end; ++ifm1ofm1) {
+    ofm1 = ifm1ofm1/handle->blocksifm;
+    ifm1 = ifm1ofm1%handle->blocksifm;
+    for(kj=0; kj < handle->desc.R; ++kj) {
+      for(ki=0; ki < handle->desc.S; ++ki) {
+        /* TODO: enable this later */
+        /*transpose<VLEN,VLEN>(&wt[ofm1][ifm1][kj][ki][0][0],&tr_wt[ofm1][ifm1][kj][ki][0][0]);*/
+        for (ofm2 = 0; ofm2 < handle->ofmblock; ++ofm2) {
+          for (ifm2 = 0; ifm2 < handle->ifmblock; ++ifm2) {
+            LIBXSMM_VLA_ACCESS(6, tr_wt, kj, ki, ofm1, ofm2, ifm1, ifm2, handle->desc.S, handle->blocksofm, handle->ofmblock, handle->blocksifm, handle->ifmblock) =
+              LIBXSMM_VLA_ACCESS(6, wt,  kj, ki, ifm1, ifm2, ofm1, ofm2, handle->desc.S, handle->blocksifm, handle->ifmblock, handle->blocksofm, handle->ofmblock);
+          }
         }
       }
     }
   }
+  libxsmm_barrier_wait((libxsmm_barrier*)handle->scratch2, ltid);
 }
-libxsmm_barrier_wait((libxsmm_barrier*)handle->scratch2, ltid);
 
 if ( libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_MIC ||
      libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CORE || /*  ) {
@@ -91,7 +93,7 @@ if ( libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_MIC ||
     img = imgifm1/handle->blocksifm;
     ifm1 = imgifm1%handle->blocksifm;
     for (ofm1 = 0; ofm1 < handle->blocksofm; ++ofm1) {
-      for(ij= 0 ; ij < handle->desc.H; ++ij) {
+      for(ij= 0 ; ij < handle->ifhp/*FIXME*/; ++ij) {
         for(kj=0; kj < handle->desc.R; ++kj) {
           oj = ij - handle->desc.R + kj + 1;
           if(oj >= 0 && oj < handle->ofh) {
@@ -103,6 +105,7 @@ if ( libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_MIC ||
         }
       }
     }
+#include "libxsmm_dnn_zero_rim_st_input_nhwc.tpl.c"
   }
 /* should never happen, this is just an additional check */
 } else {

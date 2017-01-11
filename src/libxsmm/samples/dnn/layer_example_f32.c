@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -52,10 +52,14 @@ typedef struct {
   int nOfm;
   int ifhp;
   int ifwp;
+  int ifh;
+  int ifw;
   int ofhp;
   int ofwp;
   int ofh;
   int ofw;
+  int pad_h;
+  int pad_w;
   int pad_h_in;
   int pad_w_in;
   int pad_h_out;
@@ -97,6 +101,23 @@ LIBXSMM_INLINE void init_buf(float* buf, long size, int initPos, int initOne)
   }
 }
 
+LIBXSMM_INLINE void set_zeropad_nchw(float* nchw, int N, int C, int H, int W, int pad_h, int pad_w)
+{
+  LIBXSMM_VLA_DECL(4, float, input, nchw, C, H, W);
+  int n, h, w, c;
+
+  for ( n = 0; n < N; n++ ) {
+    for ( c = 0; c < C; c++ ) {
+      for ( h = 0; h < H; h++ ) {
+        for ( w = 0; w < W; w++ ) {
+          if(h < pad_h || h >= H-pad_h || w < pad_w || w >= W-pad_w)
+            LIBXSMM_VLA_ACCESS(4,  input, n, c, h, w, C, H, W) = 0.0;
+        }
+      }
+    }
+  }
+}
+
 LIBXSMM_INLINE void compare_buf(float* ref, float* test, long size, correctness_t* norms)
 {
   int i;
@@ -119,6 +140,9 @@ LIBXSMM_INLINE void compare_buf(float* ref, float* test, long size, correctness_
     }
     if (rel_err > norms->max_rel_err) {
       norms->max_rel_err = rel_err;
+#if 0
+      printf("MISMATCH@ %3d: A=%12.8g  B=%12.8g (E:%12.4e) (R:%12.4e)\n", i, ref[i], test[i], diff, rel_err);
+#endif
     }
     if (diff > norms->max_abs_err) {
       norms->max_abs_err = diff;
@@ -219,8 +243,14 @@ LIBXSMM_INLINE void naive_conv_fp(naive_conv_t* param, const float* input, float
   int ifwp      = param->ifwp;
   int ofhp      = param->ofhp;
   int ofwp      = param->ofwp;
+  int ifh       = param->ifh;
+  int ifw       = param->ifw;
   int ofh       = param->ofh;
   int ofw       = param->ofw;
+  int pad_h     = param->pad_h;
+  int pad_w     = param->pad_w;
+  int pad_h_in  = param->pad_h_in;
+  int pad_w_in  = param->pad_w_in;
   int pad_h_out = param->pad_h_out;
   int pad_w_out = param->pad_w_out;
   int kh        = param->kh;
@@ -231,7 +261,7 @@ LIBXSMM_INLINE void naive_conv_fp(naive_conv_t* param, const float* input, float
   int img, ofm, ifm, oj, oi, ij, ii, kj, ki;
 
   LIBXSMM_VLA_DECL(4,       float, output_t, output + (pad_w_out * ofwp + pad_h_out), nOfm, ofhp, ofwp);
-  LIBXSMM_VLA_DECL(4, const float,  input_t,  input, nIfm, ifhp, ifwp);
+  LIBXSMM_VLA_DECL(4, const float,  input_t,  input + (pad_w_in * ifwp + pad_h_in), nIfm, ifhp, ifwp);
   LIBXSMM_VLA_DECL(4, const float, filter_t, filter, nIfm, kh, kw);
 
 #if defined(_OPENMP)
@@ -241,11 +271,13 @@ LIBXSMM_INLINE void naive_conv_fp(naive_conv_t* param, const float* input, float
     for (ofm = 0; ofm < nOfm; ++ofm) {
       for (ifm = 0; ifm < nIfm; ++ifm) {
         for (oj = 0; oj < ofh; ++oj) {
-          ij = oj * stride_h;
+          ij = oj * stride_h - pad_h;
           for (oi = 0; oi < ofw; ++oi) {
-            ii = oi * stride_w;
+            ii = oi * stride_w - pad_w;
             for (kj = 0; kj < kh; ++kj) {
+              if(ij+kj < 0 || ij+kj >= ifh) continue;
               for (ki = 0; ki < kw; ++ki) {
+                if(ii+ki < 0 || ii+ki >= ifw) continue;
                 LIBXSMM_VLA_ACCESS(  4, output_t, img, ofm, oj, oi, nOfm, ofhp, ofwp) +=
                   LIBXSMM_VLA_ACCESS(4,  input_t, img, ifm, ij + kj, ii + ki, nIfm, ifhp, ifwp)
                 * LIBXSMM_VLA_ACCESS(4, filter_t, ofm, ifm, kj, ki, nIfm, kh, kw);
@@ -267,8 +299,14 @@ LIBXSMM_INLINE void naive_conv_bp(naive_conv_t* param, float* input, const float
   int ifwp      = param->ifwp;
   int ofhp      = param->ofhp;
   int ofwp      = param->ofwp;
+  int ifh       = param->ifh;
+  int ifw       = param->ifw;
   int ofh       = param->ofh;
   int ofw       = param->ofw;
+  int pad_h     = param->pad_h;
+  int pad_w     = param->pad_w;
+  int pad_h_in  = param->pad_h_in;
+  int pad_w_in  = param->pad_w_in;
   int pad_h_out = param->pad_h_out;
   int pad_w_out = param->pad_w_out;
   int kh        = param->kh;
@@ -279,7 +317,7 @@ LIBXSMM_INLINE void naive_conv_bp(naive_conv_t* param, float* input, const float
   int img, ofm, ifm, oj, oi, ij, ii, kj, ki;
 
   LIBXSMM_VLA_DECL(4, const float, output_t, output + (pad_w_out * ofwp + pad_h_out), nOfm, ofhp, ofwp);
-  LIBXSMM_VLA_DECL(4,       float,  input_t,  input, nIfm, ifhp, ifwp);
+  LIBXSMM_VLA_DECL(4,       float,  input_t,  input + (pad_w_in * ifwp + pad_h_in), nIfm, ifhp, ifwp);
   LIBXSMM_VLA_DECL(4, const float, filter_t, filter, nIfm, kh, kw);
 
 #if defined(_OPENMP)
@@ -289,11 +327,13 @@ LIBXSMM_INLINE void naive_conv_bp(naive_conv_t* param, float* input, const float
     for(ifm = 0; ifm < nIfm; ++ifm) {
       for(ofm = 0; ofm < nOfm; ++ofm) {
         for(oj = 0; oj < ofh; ++oj) {
-          ij = oj * stride_h;
+          ij = oj * stride_h - pad_h;
           for(oi = 0; oi < ofw; ++oi) {
-            ii = oi * stride_w;
+            ii = oi * stride_w - pad_w;
             for(kj = 0; kj < kh; ++kj) {
+              if(ij+kj < 0 || ij+kj >= ifh) continue;
               for(ki = 0; ki < kw; ++ki) {
+                if(ii+ki < 0 || ii+ki >= ifw) continue;
                 LIBXSMM_VLA_ACCESS(4,  input_t, img, ifm, ij + kj, ii + ki, nIfm, ifhp, ifwp) +=
                   LIBXSMM_VLA_ACCESS(4, output_t, img, ofm, oj, oi, nOfm, ofhp, ofwp)
                 * LIBXSMM_VLA_ACCESS(4, filter_t, ofm, ifm, kj, ki, nIfm, kh, kw);
@@ -315,8 +355,14 @@ LIBXSMM_INLINE void naive_conv_wu(naive_conv_t* param, const float* input, const
   int ifwp      = param->ifwp;
   int ofhp      = param->ofhp;
   int ofwp      = param->ofwp;
+  int ifh       = param->ifh;
+  int ifw       = param->ifw;
   int ofh       = param->ofh;
   int ofw       = param->ofw;
+  int pad_h     = param->pad_h;
+  int pad_w     = param->pad_w;
+  int pad_h_in  = param->pad_h_in;
+  int pad_w_in  = param->pad_w_in;
   int pad_h_out = param->pad_h_out;
   int pad_w_out = param->pad_w_out;
   int kh        = param->kh;
@@ -327,7 +373,7 @@ LIBXSMM_INLINE void naive_conv_wu(naive_conv_t* param, const float* input, const
   int img, ofm, ifm, oj, oi, ij, ii, kj, ki;
 
   LIBXSMM_VLA_DECL(4, const float, output_t, output + (pad_w_out * ofwp + pad_h_out), nOfm, ofhp, ofwp);
-  LIBXSMM_VLA_DECL(4, const float,  input_t,  input, nIfm, ifhp, ifwp);
+  LIBXSMM_VLA_DECL(4, const float,  input_t,  input + (pad_w_in * ifwp + pad_h_in), nIfm, ifhp, ifwp);
   LIBXSMM_VLA_DECL(4,       float, filter_t, filter, nIfm, kh, kw);
 
 #if defined(_OPENMP)
@@ -337,11 +383,13 @@ LIBXSMM_INLINE void naive_conv_wu(naive_conv_t* param, const float* input, const
     for(ifm = 0; ifm < nIfm; ++ifm) {
       for(img = 0; img < nImg; ++img) {
         for(oj = 0; oj < ofh; ++oj) {
-          ij = oj * stride_h;
+          ij = oj * stride_h - pad_h;
           for(oi = 0; oi < ofw; ++oi) {
-            ii = oi * stride_w;
+            ii = oi * stride_w - pad_w;
             for(kj = 0; kj < kh; ++kj) {
-              for(ki = 0; ki < kw; ++ki) {
+              if(ij+kj < 0 || ij+kj >= ifh) continue;
+              for (ki = 0; ki < kw; ++ki) {
+                if(ii+ki < 0 || ii+ki >= ifw) continue;
                 LIBXSMM_VLA_ACCESS(4, filter_t, ofm, ifm, kj, ki, nIfm, kh, kw) +=
                   LIBXSMM_VLA_ACCESS(4,  input_t, img, ifm, ij + kj, ii + ki, nIfm, ifhp, ifwp)
                 * LIBXSMM_VLA_ACCESS(4, output_t, img, ofm, oj, oi, nOfm, ofhp, ofwp);
@@ -359,8 +407,9 @@ int main(int argc, char* argv[])
   float *naive_input, *naive_output, *naive_filter, *naive_filter_wu, *naive_libxsmm_output;
   float *naive_libxsmm_input, *naive_libxsmm_filter, *naive_input_save, *naive_filter_save, *naive_filter_kcrs;
   float *input_nhwc, *output_nhwc, *filter_rsck, *naive_output_nhwc, *naive_input_nhwc;
+  float *input_libxsmm, *filter_libxsmm, *output_libxsmm;
   int ifhp, ifwp, ofhp, ofwp, ofh, ofw;
-  int stride_h, stride_w, pad_h_out, pad_w_out;
+  int stride_h, stride_w, pad_h, pad_w, pad_h_in, pad_w_in, pad_h_out, pad_w_out;
   naive_conv_t naive_param;
   correctness_t norms_fwd, norms_bwd, norms_upd;
 
@@ -368,17 +417,17 @@ int main(int argc, char* argv[])
      default is some inner layer of overfeat */
   int iters = 10;         /* repetitions of benchmark */
   int ifw = 14;           /* input width, "W" */
-  int ifh = 14;           /* input height, "H" */
-  int nImg = 1;           /* mini-batch size, "N" */
+  int ifh = 18;           /* input height, "H" */
+  int nImg = 32;          /* mini-batch size, "N" */
   int nIfm = 256;         /* number of input feature maps, "C" */
   int nOfm = 512;         /* number of output feature maps, "K" */
   int kh = 3;             /* filter height, "R" */
   int kw = 3;             /* filter width, "S" */
-  int pad = 1;            /* padding in output */
+  int pad = 2;            /* padding in output */
   int stride = 1;         /* stride when accessing inputs */
   char type = 'A';        /* 'A': ALL, 'F': FP, 'B': BP, 'U', WU */
 #if defined(_OPENMP)
-  int nThreads = omp_get_max_threads();       /* number of threads */
+  int nThreads = omp_get_max_threads();      /* number of threads */
 #else
   int nThreads = 1;       /* number of threads */
 #endif
@@ -426,14 +475,20 @@ int main(int argc, char* argv[])
 
   stride_w = stride;
   stride_h = stride;
-  pad_h_out = pad;
-  pad_w_out = pad;
+  pad_h = pad;
+  pad_w = pad;
+
+  pad_h_in = pad_h;
+  pad_w_in = pad_w;
+
+  pad_h_out = 0;
+  pad_w_out = 0;
 
   /* deriving some values for naive code */
-  ofh = (ifh - kh) / stride_h + 1;
-  ofw = (ifw - kw) / stride_w + 1;
-  ifhp = ifh;
-  ifwp = ifw;
+  ofh = (ifh + 2 * pad_h - kh) / stride_h + 1;
+  ofw = (ifw + 2 * pad_w - kw) / stride_w + 1;
+  ifhp = ifh + 2 * pad_h_in;
+  ifwp = ifw + 2 * pad_w_in;
   ofhp = ofh + 2 * pad_h_out;
   ofwp = ofw + 2 * pad_w_out;
 
@@ -445,10 +500,14 @@ int main(int argc, char* argv[])
   naive_param.ifwp = ifwp;
   naive_param.ofhp = ofhp;
   naive_param.ofwp = ofwp;
+  naive_param.ifh = ifh;
+  naive_param.ifw = ifw;
   naive_param.ofh = ofh;
   naive_param.ofw = ofw;
-  naive_param.pad_h_in = 0;
-  naive_param.pad_w_in = 0;
+  naive_param.pad_h = pad_h;
+  naive_param.pad_w = pad_w;
+  naive_param.pad_h_in = pad_h_in;
+  naive_param.pad_w_in = pad_w_in;
   naive_param.pad_h_out = pad_h_out;
   naive_param.pad_w_out = pad_w_out;
   naive_param.kh = kh;
@@ -460,7 +519,7 @@ int main(int argc, char* argv[])
   printf("##########################################\n");
   printf("#          Setting Up (Common)           #\n");
   printf("##########################################\n");
-  printf("PARAMS: W:%d  H:%d  N:%d  C:%d  K:%d  R:%d  S:%d  STRIDE:%d\n", ifw, ifh, nImg, nIfm, nOfm, kw, kh, stride);
+  printf("PARAMS: W:%d  H:%d  N:%d  C:%d  K:%d  R:%d  S:%d  P:%d  Q:%d  STRIDE:%d\n", ifw, ifh, nImg, nIfm, nOfm, kw, kh, ofh, ofw, stride);
   printf("PARAMS: ITERS:%d  Threads:%d\n", iters, nThreads);
   printf(" InImg %dx%d Padded (%dx%d)\n", ifh, ifw, ifhp, ifwp);
   printf("OutImg %dx%d Padded (%dx%d)\n", ofh, ofw, ofhp, ofwp);
@@ -486,9 +545,13 @@ int main(int argc, char* argv[])
   naive_output_nhwc     = (float*)libxsmm_aligned_malloc( nImg*nOfm*ofhp*ofwp*sizeof(float), 2097152);
   naive_input_nhwc      = (float*)libxsmm_aligned_malloc( nImg*nIfm*ifhp*ifwp*sizeof(float), 2097152);
   filter_rsck           = (float*)libxsmm_aligned_malloc( nOfm*nIfm*kh*kw*    sizeof(float), 2097152);
+  input_libxsmm         = (float*)libxsmm_aligned_malloc( nImg*nIfm*ifhp*ifwp*sizeof(float), 2097152);
+  filter_libxsmm        = (float*)libxsmm_aligned_malloc( nOfm*nIfm*kh*kw*    sizeof(float), 2097152);
+  output_libxsmm        = (float*)libxsmm_aligned_malloc( nImg*nOfm*ofhp*ofwp*sizeof(float), 2097152);
 
   /* initialize data */
   init_buf(naive_input,          nImg*nIfm*ifhp*ifwp, 0, 0);
+  set_zeropad_nchw(naive_input, nImg, nIfm, ifhp, ifwp, pad_h_in, pad_w_in);
   copy_buf(naive_input, naive_input_save, nImg*nIfm*ifhp*ifwp);
   zero_buf(naive_output,         nImg*nOfm*ofhp*ofwp);
   zero_buf(naive_libxsmm_output, nImg*nOfm*ofhp*ofwp);
@@ -518,8 +581,10 @@ int main(int argc, char* argv[])
   conv_desc.u = stride_h;
   conv_desc.v = stride_w;
   /* @TODO we need to change the interface to provide CAFFE compatible padding! */
-  conv_desc.pad_h_in = 0;
-  conv_desc.pad_w_in = 0;
+  conv_desc.pad_h = pad_h;
+  conv_desc.pad_w = pad_w;
+  conv_desc.pad_h_in = pad_h_in;
+  conv_desc.pad_w_in = pad_w_in;
   conv_desc.pad_h_out = pad_h_out;
   conv_desc.pad_w_out = pad_w_out;
   conv_desc.threads = nThreads;
@@ -528,6 +593,7 @@ int main(int argc, char* argv[])
   conv_desc.filter_format = LIBXSMM_DNN_CONV_FORMAT_LIBXSMM;
   conv_desc.fuse_ops = LIBXSMM_DNN_CONV_FUSE_NONE;
   conv_desc.options = LIBXSMM_DNN_CONV_OPTION_NONE;
+  /*conv_desc.options = LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE;*/
   conv_desc.datatype_in = LIBXSMM_DNN_DATATYPE_F32;
   conv_desc.datatype_out = LIBXSMM_DNN_DATATYPE_F32;
 
@@ -535,14 +601,16 @@ int main(int argc, char* argv[])
   CHKERR_LIBXSMM_DNN( status );
 
   /* setup LIBXSMM buffers and filter */
-  libxsmm_input = libxsmm_dnn_create_input_buffer_check( libxsmm_handle, &status );
+  libxsmm_input = libxsmm_dnn_link_input_buffer_check( libxsmm_handle, input_libxsmm, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
   CHKERR_LIBXSMM_DNN( status );
-  libxsmm_output = libxsmm_dnn_create_output_buffer_check( libxsmm_handle, &status );
+  libxsmm_output = libxsmm_dnn_link_output_buffer_check( libxsmm_handle, output_libxsmm, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
   CHKERR_LIBXSMM_DNN( status );
-  libxsmm_filter = libxsmm_dnn_create_filter_check( libxsmm_handle, &status );
+  libxsmm_filter = libxsmm_dnn_link_filter_check( libxsmm_handle, filter_libxsmm, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
   CHKERR_LIBXSMM_DNN( status );
 
   /* copy in data to LIBXSMM format */
+  /* we can also use the layout functions and set the data on our
+     own external to the library, @TODO, we plan to add an example here */
   CHKERR_LIBXSMM_DNN( libxsmm_dnn_copyin_buffer( libxsmm_input, (void*)naive_input, LIBXSMM_DNN_CONV_FORMAT_NCHW ) );
   CHKERR_LIBXSMM_DNN( libxsmm_dnn_zero_buffer( libxsmm_output ) );
   CHKERR_LIBXSMM_DNN( libxsmm_dnn_copyin_filter( libxsmm_filter, (void*)naive_filter, LIBXSMM_DNN_CONV_FORMAT_KCRS ) );
@@ -629,6 +697,9 @@ int main(int argc, char* argv[])
       const int tid = 0;
 #endif
       CHKERR_LIBXSMM_DNN( libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid ) );
+    }
+    if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+      CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
     }
     /* copy out data */
     CHKERR_LIBXSMM_DNN( libxsmm_dnn_copyout_filter( libxsmm_filter, (void*)naive_libxsmm_filter, LIBXSMM_DNN_CONV_FORMAT_KCRS ) );
@@ -724,6 +795,9 @@ int main(int argc, char* argv[])
 #endif
         libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid );
       }
+      if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+        CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
+      }
     }
     l_end = libxsmm_timer_tick();
     l_total = libxsmm_timer_duration(l_start, l_end);
@@ -760,8 +834,10 @@ int main(int argc, char* argv[])
   conv_desc.u = stride_h;
   conv_desc.v = stride_w;
   /* @TODO we need to change the interface to provide CAFFE compatible padding! */
-  conv_desc.pad_h_in = 0;
-  conv_desc.pad_w_in = 0;
+  conv_desc.pad_h = pad_h;
+  conv_desc.pad_w = pad_w;
+  conv_desc.pad_h_in = pad_h_in;
+  conv_desc.pad_w_in = pad_w_in;
   conv_desc.pad_h_out = pad_h_out;
   conv_desc.pad_w_out = pad_w_out;
   conv_desc.threads = nThreads;
@@ -770,6 +846,7 @@ int main(int argc, char* argv[])
   conv_desc.filter_format = LIBXSMM_DNN_CONV_FORMAT_RSCK;
   conv_desc.fuse_ops = LIBXSMM_DNN_CONV_FUSE_NONE;
   conv_desc.options = LIBXSMM_DNN_CONV_OPTION_NONE;
+  /*conv_desc.options = LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE;*/
   conv_desc.datatype_in = LIBXSMM_DNN_DATATYPE_F32;
   conv_desc.datatype_out = LIBXSMM_DNN_DATATYPE_F32;
 
@@ -822,6 +899,7 @@ int main(int argc, char* argv[])
     printf("# Correctness - BWD (NHWC/RSCK-Storage)  #\n");
     printf("##########################################\n");
     /* run LIBXSMM convolutions */
+    CHKERR_LIBXSMM_DNN( libxsmm_dnn_transpose_filter( libxsmm_handle ) );
 #if defined(_OPENMP)
 # pragma omp parallel
 #endif
@@ -860,6 +938,9 @@ int main(int argc, char* argv[])
       const int tid = 0;
 #endif
       CHKERR_LIBXSMM_DNN( libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid ) );
+    }
+    if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+      CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
     }
     /* copy input data into KCRS storage in user code */
     naive_copy_RSCK_to_KCRS(filter_rsck, naive_filter_kcrs, kh, kw, nIfm, nOfm);
@@ -912,6 +993,7 @@ int main(int argc, char* argv[])
     /* run LIBXSMM convolution for performance */
     l_start = libxsmm_timer_tick();
     for (i = 0; i < iters; ++i) {
+      CHKERR_LIBXSMM_DNN( libxsmm_dnn_transpose_filter( libxsmm_handle ) );
 #if defined(_OPENMP)
 #   pragma omp parallel
 #endif
@@ -955,6 +1037,9 @@ int main(int argc, char* argv[])
 #endif
         libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid );
       }
+      if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+        CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
+      }
     }
     l_end = libxsmm_timer_tick();
     l_total = libxsmm_timer_duration(l_start, l_end);
@@ -991,8 +1076,10 @@ int main(int argc, char* argv[])
   conv_desc.u = stride_h;
   conv_desc.v = stride_w;
   /* @TODO we need to change the interface to provide CAFFE compatible padding! */
-  conv_desc.pad_h_in = 0;
-  conv_desc.pad_w_in = 0;
+  conv_desc.pad_h = pad_h;
+  conv_desc.pad_w = pad_w;
+  conv_desc.pad_h_in = pad_h_in;
+  conv_desc.pad_w_in = pad_w_in;
   conv_desc.pad_h_out = pad_h_out;
   conv_desc.pad_w_out = pad_w_out;
   conv_desc.threads = nThreads;
@@ -1001,6 +1088,7 @@ int main(int argc, char* argv[])
   conv_desc.filter_format = LIBXSMM_DNN_CONV_FORMAT_LIBXSMM;
   conv_desc.fuse_ops = LIBXSMM_DNN_CONV_FUSE_NONE;
   conv_desc.options = LIBXSMM_DNN_CONV_OPTION_NONE;
+  /*conv_desc.options = LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE;*/
   conv_desc.datatype_in = LIBXSMM_DNN_DATATYPE_F32;
   conv_desc.datatype_out = LIBXSMM_DNN_DATATYPE_F32;
 
@@ -1017,7 +1105,7 @@ int main(int argc, char* argv[])
   CHKERR_LIBXSMM_DNN( status );
   libxsmm_output = libxsmm_dnn_link_output_buffer_check( libxsmm_handle, output_nhwc, LIBXSMM_DNN_CONV_FORMAT_NHWC_PTR, &status );
   CHKERR_LIBXSMM_DNN( status );
-  libxsmm_filter = libxsmm_dnn_create_filter_check( libxsmm_handle, &status );
+  libxsmm_filter = libxsmm_dnn_link_filter_check( libxsmm_handle, filter_libxsmm, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
   CHKERR_LIBXSMM_DNN( status );
 
   /* copy in data to LIBXSMM format */
@@ -1058,7 +1146,7 @@ int main(int argc, char* argv[])
 
   if ( (type == 'A' || type == 'B') && (stride == 1 && nIfm > 3) ) {
     printf("##########################################\n");
-    printf("# Correctness - BWD (NHWC/RSCK-Storage)  #\n");
+    printf("# Correctness - BWD(NHWC/custom-Storage) #\n");
     printf("##########################################\n");
     /* run LIBXSMM convolutions */
 #if defined(_OPENMP)
@@ -1099,6 +1187,9 @@ int main(int argc, char* argv[])
       const int tid = 0;
 #endif
       CHKERR_LIBXSMM_DNN( libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid ) );
+    }
+    if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+      CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
     }
     /* copy out data */
     CHKERR_LIBXSMM_DNN( libxsmm_dnn_copyout_filter( libxsmm_filter, (void*)naive_libxsmm_filter, LIBXSMM_DNN_CONV_FORMAT_KCRS ) );
@@ -1194,6 +1285,9 @@ int main(int argc, char* argv[])
 #endif
         libxsmm_dnn_convolve_st( libxsmm_handle, LIBXSMM_DNN_CONV_KIND_UPD, 0, tid );
       }
+      if (conv_desc.options == LIBXSMM_DNN_CONV_OPTION_WU_EXT_FILTER_REDUCE) {
+        CHKERR_LIBXSMM_DNN( libxsmm_dnn_reduce_wu_filters( libxsmm_handle ) );
+      }
     }
     l_end = libxsmm_timer_tick();
     l_total = libxsmm_timer_duration(l_start, l_end);
@@ -1230,6 +1324,9 @@ int main(int argc, char* argv[])
   libxsmm_free(naive_output_nhwc);
   libxsmm_free(naive_input_nhwc);
   libxsmm_free(filter_rsck);
+  libxsmm_free(libxsmm_input);
+  libxsmm_free(libxsmm_filter);
+  libxsmm_free(libxsmm_output);
 
   /* some empty lines at the end */
   printf("\n\n\n");

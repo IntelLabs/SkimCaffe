@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -91,7 +91,7 @@ LIBXSMM_API_DEFINITION int libxsmm_cpuid_x86(void)
     if (0x0C000000 == (0x0C000000 & ecx)) {
       /* Check for CRC32 (this is not a proper test for SSE 4.2 as a whole!) */
       if (0x00100000 == (0x00100000 & ecx)) {
-        target_arch = LIBXSMM_X86_SSE4_2;
+        target_arch = LIBXSMM_X86_SSE4;
       }
       LIBXSMM_XGETBV(0, eax, edx);
 
@@ -126,11 +126,15 @@ LIBXSMM_API_DEFINITION int libxsmm_cpuid_x86(void)
     }
   }
 
-#if defined(LIBXSMM_STATIC_TARGET_ARCH)
   /* check if procedure obviously failed to detect the highest available instruction set extension */
   assert(LIBXSMM_STATIC_TARGET_ARCH <= target_arch);
-#endif
 
   return LIBXSMM_MAX(target_arch, LIBXSMM_STATIC_TARGET_ARCH);
+}
+
+
+LIBXSMM_API_DEFINITION int libxsmm_cpuid(void)
+{
+  return libxsmm_cpuid_x86();
 }
 

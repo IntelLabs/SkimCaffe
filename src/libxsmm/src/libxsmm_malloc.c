@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2014-2016, Intel Corporation                                **
+** Copyright (c) 2014-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -33,9 +33,8 @@
 #if !defined(_GNU_SOURCE)
 # define _GNU_SOURCE
 #endif
-#include "libxsmm_malloc.h"
+#include <libxsmm.h>
 #include "libxsmm_main.h"
-#include <libxsmm_sync.h>
 
 #if defined(LIBXSMM_OFFLOAD_TARGET)
 # pragma offload_attribute(push,target(LIBXSMM_OFFLOAD_TARGET))
@@ -57,6 +56,11 @@
 # include <sys/types.h>
 # include <unistd.h>
 # include <errno.h>
+# if defined(MAP_ANONYMOUS)
+#   define LIBXSMM_MAP_ANONYMOUS MAP_ANONYMOUS
+# else
+#   define LIBXSMM_MAP_ANONYMOUS MAP_ANON
+# endif
 #endif
 #if defined(LIBXSMM_VTUNE)
 # include <jitprofiling.h>
@@ -69,12 +73,26 @@
 #   define LIBXSMM_VTUNE_JIT_LOAD iJVM_EVENT_TYPE_METHOD_LOAD_FINISHED
 # endif
 # define LIBXSMM_VTUNE_JIT_UNLOAD iJVM_EVENT_TYPE_METHOD_UNLOAD_START
+# define LIBXSMM_MALLOC_NOCRC
 #endif /*defined(LIBXSMM_VTUNE)*/
 #if defined(LIBXSMM_OFFLOAD_TARGET)
 # pragma offload_attribute(pop)
 #endif
 #if defined(LIBXSMM_PERF)
 # include "libxsmm_perf.h"
+#endif
+
+#if !defined(LIBXSMM_MALLOC_FALLBACK)
+# define LIBXSMM_MALLOC_FALLBACK 0
+#endif
+
+#if defined(NDEBUG) || defined(LIBXSMM_MALLOC_NOCRC)
+# include "libxsmm_hash.h"
+# if !defined(LIBXSMM_MALLOC_SEED)
+#   define LIBXSMM_MALLOC_SEED 1051981
+# endif
+#else
+# define LIBXSMM_MALLOC_NOCRC
 #endif
 
 #if !defined(LIBXSMM_MALLOC_ALIGNMAX)
@@ -90,20 +108,16 @@
 #endif
 
 
-typedef struct LIBXSMM_RETARGETABLE internal_malloc_extra_type {
-  /* also avoids warning about empty structure */
-  void* reloc;
+typedef struct LIBXSMM_RETARGETABLE internal_malloc_info_type {
+  void *pointer, *reloc;
+  size_t size;
+  int flags;
 #if defined(LIBXSMM_VTUNE)
   unsigned int code_id;
 #endif
-} internal_malloc_extra_type;
-
-
-typedef struct LIBXSMM_RETARGETABLE internal_malloc_info_type {
-  void* pointer;
-  size_t size;
-  int flags;
-  internal_malloc_extra_type internal;
+#if !defined(LIBXSMM_MALLOC_NOCRC) /* hash *must* be the last entry */
+  unsigned int hash;
+#endif
 } internal_malloc_info_type;
 
 
@@ -167,26 +181,40 @@ LIBXSMM_INLINE LIBXSMM_RETARGETABLE void internal_get_vtune_jitdesc(const volati
 
 LIBXSMM_INLINE LIBXSMM_RETARGETABLE internal_malloc_info_type* internal_malloc_info(const volatile void* memory)
 {
-  /* TODO: rely on correct memory information; implement checksum */
-  return (internal_malloc_info_type*)(0 != memory ? (((const char*)memory) - sizeof(internal_malloc_info_type)) : 0);
+  internal_malloc_info_type* result = (internal_malloc_info_type*)
+    (0 != memory ? (((const char*)memory) - sizeof(internal_malloc_info_type)) : 0);
+#if defined(LIBXSMM_MALLOC_NOCRC)
+  return result;
+#else /* calculate checksum over info */
+  return (0 != result && result->hash == libxsmm_crc32(result, /* info size minus actual hash value */
+    sizeof(internal_malloc_info_type) - sizeof(unsigned int), LIBXSMM_MALLOC_SEED)) ? result : 0;
+#endif
 }
 
 
 LIBXSMM_API_DEFINITION int libxsmm_malloc_info(const volatile void* memory, size_t* size, int* flags, void** extra)
 {
   int result = EXIT_SUCCESS;
-#if !defined(NDEBUG)
+#if !defined(NDEBUG) || !defined(LIBXSMM_MALLOC_NOCRC)
+  static int error_once = 0;
   if (0 != size || 0 != extra)
 #endif
   {
-    if (0 != memory) {
-      const internal_malloc_info_type *const info = internal_malloc_info(memory);
-      assert(0 != info);
+    const internal_malloc_info_type *const info = internal_malloc_info(memory);
+    if (0 != info) {
       if (size) *size = info->size;
       if (flags) *flags = info->flags;
       if (extra) *extra = info->pointer;
     }
     else {
+      if (0 != memory) {
+#if !defined(LIBXSMM_MALLOC_NOCRC)
+        if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
+          fprintf(stderr, "LIBXSMM: checksum error for memory buffer %p!\n", memory);
+        }
+#endif
+        result = EXIT_FAILURE;
+      }
       if (size) *size = 0;
       if (flags) *flags = 0;
       if (extra) *extra = 0;
@@ -194,14 +222,15 @@ LIBXSMM_API_DEFINITION int libxsmm_malloc_info(const volatile void* memory, size
   }
 #if !defined(NDEBUG)
   else {
-    static int error_once = 0;
     if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
       fprintf(stderr, "LIBXSMM: attachment error for memory buffer %p!\n", memory);
     }
     result = EXIT_FAILURE;
   }
-#endif
+# if defined(LIBXSMM_MALLOC_NOCRC)
   assert(EXIT_SUCCESS == result);
+# endif
+#endif
   return result;
 }
 
@@ -233,10 +262,10 @@ LIBXSMM_INLINE LIBXSMM_RETARGETABLE void* internal_xmap(const char* dir, size_t 
   if (0 <= i && i < (int)sizeof(filename)) {
     i = mkstemps(filename, 4);
     if (-1 != i && 0 == unlink(filename) && 0 == ftruncate(i, size)) {
-      void *const xmap = mmap(0, size, PROT_READ | PROT_EXEC, flags | MAP_SHARED, i, 0);
+      void *const xmap = mmap(0, size, PROT_READ | PROT_EXEC, flags | MAP_SHARED /*| LIBXSMM_MAP_ANONYMOUS*/, i, 0);
       if (MAP_FAILED != xmap) {
         assert(0 != xmap);
-        result = mmap(0, size, PROT_READ | PROT_WRITE, flags | MAP_SHARED, i, 0);
+        result = mmap(0, size, PROT_READ | PROT_WRITE, flags | MAP_SHARED /*| LIBXSMM_MAP_ANONYMOUS*/, i, 0);
         if (MAP_FAILED != result) {
           assert(0 != result);
           internal_mhint(xmap, size);
@@ -350,14 +379,10 @@ LIBXSMM_API_DEFINITION int libxsmm_xmalloc(void** memory, size_t size, int align
         alloc_size = internal_size + alloc_alignment - 1;
         alloc_failed = MAP_FAILED;
         if (0 == (LIBXSMM_MALLOC_FLAG_X & flags)) {
-# if defined(__APPLE__) && defined(__MACH__)
-          buffer = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | xflags, -1, 0);
-# else
-          buffer = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | xflags, -1, 0);
-# endif
+          buffer = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | LIBXSMM_MAP_ANONYMOUS | xflags, -1, 0);
         }
         else {
-          static LIBXSMM_TLS int fallback = 0;
+          static LIBXSMM_TLS int fallback = LIBXSMM_MALLOC_FALLBACK;
           if (0 == fallback) {
             buffer = internal_xmap("/tmp", alloc_size, xflags, &reloc);
             if (alloc_failed == buffer) fallback = 1;
@@ -374,18 +399,27 @@ LIBXSMM_API_DEFINITION int libxsmm_xmalloc(void** memory, size_t size, int align
             buffer = internal_xmap(getenv("JITDUMPDIR"), alloc_size, xflags, &reloc);
             if (alloc_failed == buffer) fallback = 4;
           }
-          if (4 == fallback) { /* never try again */
-            buffer = alloc_failed;
-            reloc = 0;
+          if (4 == fallback) { /* 5th try */
+            buffer = mmap(0, alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+              MAP_PRIVATE | LIBXSMM_MAP_ANONYMOUS | xflags, -1, 0);
+            if (alloc_failed == buffer) fallback = 5;
+          }
+          if (5 == fallback && alloc_failed != buffer) { /* final */
+            buffer = alloc_failed; /* trigger fall-back */
           }
         }
         if (alloc_failed != buffer) {
           assert(0 != buffer);
           flags |= LIBXSMM_MALLOC_FLAG_MMAP; /* select the corresponding deallocation */
         }
-        else if (0 == (LIBXSMM_MALLOC_FLAG_MMAP & flags)) { /* fall-back allocation */
-          buffer = malloc(alloc_size);
-          reloc = buffer;
+        else {
+          if (0 == (LIBXSMM_MALLOC_FLAG_MMAP & flags)) { /* fall-back allocation */
+            buffer = malloc(alloc_size);
+            reloc = buffer;
+          }
+          else {
+            reloc = 0;
+          }
         }
         if (MAP_FAILED != buffer && 0 != buffer) {
           internal_mhint(buffer, alloc_size);
@@ -396,9 +430,6 @@ LIBXSMM_API_DEFINITION int libxsmm_xmalloc(void** memory, size_t size, int align
         char *const aligned = LIBXSMM_ALIGN(((char*)buffer) + extra_size + sizeof(internal_malloc_info_type), alloc_alignment);
         internal_malloc_info_type *const info = (internal_malloc_info_type*)(aligned - sizeof(internal_malloc_info_type));
         assert((aligned + size) <= (((char*)buffer) + alloc_size));
-#if !defined(NDEBUG) && !defined(_WIN32)
-        memset(buffer, 0, alloc_size);
-#endif
         if (0 < extra_size && 0 != extra) {
           const char *const src = (const char*)extra;
           char *const dst = (char*)buffer;
@@ -413,10 +444,14 @@ LIBXSMM_API_DEFINITION int libxsmm_xmalloc(void** memory, size_t size, int align
           result = EXIT_FAILURE;
         }
 #endif
-        info->internal.reloc = reloc;
+        info->reloc = reloc;
         info->pointer = buffer;
         info->size = size;
         info->flags = flags;
+#if !defined(LIBXSMM_MALLOC_NOCRC) /* calculate checksum over info */
+        info->hash = libxsmm_crc32(info, /* info size minus actual hash value */
+          sizeof(internal_malloc_info_type) - sizeof(unsigned int), LIBXSMM_MALLOC_SEED);
+#endif
         *memory = aligned;
       }
       else {
@@ -445,33 +480,32 @@ LIBXSMM_API_DEFINITION int libxsmm_xmalloc(void** memory, size_t size, int align
 
 LIBXSMM_API_DEFINITION int libxsmm_xfree(const volatile void* memory)
 {
+  /*const*/ internal_malloc_info_type *const info = internal_malloc_info(memory);
   int result = EXIT_SUCCESS;
-  if (memory) {
-    /*const*/ internal_malloc_info_type *const info = internal_malloc_info(memory);
-    assert((0 != info->pointer || 0 == info->size));
+# if !defined(NDEBUG) || !defined(LIBXSMM_MALLOC_NOCRC)
+  static int error_once = 0;
+#endif
+  if (0 != info) {
+    void *const buffer = info->pointer;
+    assert((0 != buffer || 0 == info->size));
     if (0 == (LIBXSMM_MALLOC_FLAG_MMAP & info->flags)) {
-      free(info->pointer);
+      free(buffer);
     }
     else {
-#if defined(LIBXSMM_VTUNE) || !defined(_WIN32)
-      /*const*/ internal_malloc_extra_type *const internal = &info->internal;
-      assert(0 != internal);
-# if defined(LIBXSMM_VTUNE)
-      if (0 != (LIBXSMM_MALLOC_FLAG_X & info->flags) && 0 != internal->code_id && iJIT_SAMPLING_ON == iJIT_IsProfilingActive()) {
-        iJIT_NotifyEvent(LIBXSMM_VTUNE_JIT_UNLOAD, &internal->code_id);
+#if defined(LIBXSMM_VTUNE)
+      if (0 != (LIBXSMM_MALLOC_FLAG_X & info->flags) && 0 != info->code_id && iJIT_SAMPLING_ON == iJIT_IsProfilingActive()) {
+        iJIT_NotifyEvent(LIBXSMM_VTUNE_JIT_UNLOAD, &info->code_id);
       }
-# endif
 #endif
 #if defined(_WIN32)
-      result = FALSE != VirtualFree(info->pointer, 0, MEM_RELEASE) ? EXIT_SUCCESS : EXIT_FAILURE;
+      result = FALSE != VirtualFree(buffer, 0, MEM_RELEASE) ? EXIT_SUCCESS : EXIT_FAILURE;
 #else /* defined(_WIN32) */
       {
-        const size_t alloc_size = info->size + (((const char*)memory) - ((const char*)info->pointer));
-        void *const buffer = info->pointer, *const reloc = internal->reloc;
+        const size_t alloc_size = info->size + (((const char*)memory) - ((const char*)buffer));
+        void *const reloc = info->reloc;
         const int flags = info->flags;
         if (0 != munmap(buffer, alloc_size)) {
 # if !defined(NDEBUG) /* library code is expected to be mute */
-          static int error_once = 0;
           if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
             const char *const error_message = strerror(errno);
             fprintf(stderr, "LIBXSMM: %s (munmap error #%i for range %p+%llu)!\n",
@@ -481,11 +515,10 @@ LIBXSMM_API_DEFINITION int libxsmm_xfree(const volatile void* memory)
           result = EXIT_FAILURE;
         }
         if (0 != (LIBXSMM_MALLOC_FLAG_X & flags) && EXIT_SUCCESS == result
-         && 0 != reloc && MAP_FAILED != reloc
+         && 0 != reloc && MAP_FAILED != reloc && buffer != reloc
          && 0 != munmap(reloc, alloc_size))
         {
 # if !defined(NDEBUG) /* library code is expected to be mute */
-          static int error_once = 0;
           if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
             const char *const error_message = strerror(errno);
             fprintf(stderr, "LIBXSMM: %s (munmap error #%i for range %p+%llu)!\n",
@@ -498,6 +531,14 @@ LIBXSMM_API_DEFINITION int libxsmm_xfree(const volatile void* memory)
 #endif
     }
   }
+  else if (0 != memory) {
+#if !defined(LIBXSMM_MALLOC_NOCRC)
+    if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
+      fprintf(stderr, "LIBXSMM: checksum error for memory buffer %p!\n", memory);
+    }
+#endif
+    result = EXIT_FAILURE;
+  }
   assert(EXIT_SUCCESS == result);
   return result;
 }
@@ -505,43 +546,47 @@ LIBXSMM_API_DEFINITION int libxsmm_xfree(const volatile void* memory)
 
 LIBXSMM_API_DEFINITION int libxsmm_malloc_attrib(void** memory, int flags, const char* name)
 {
+  internal_malloc_info_type *const info = 0 != memory ? internal_malloc_info(*memory) : 0;
   int result = EXIT_SUCCESS;
-#if !defined(NDEBUG)
+#if !defined(NDEBUG) || !defined(LIBXSMM_MALLOC_NOCRC)
   static int error_once = 0;
 #endif
-  if (0 != memory) {
-    internal_malloc_info_type *const info = internal_malloc_info(*memory);
-    internal_malloc_extra_type *const internal = &info->internal;
+  if (0 != info) {
     void *const buffer = info->pointer;
     const size_t size = info->size;
-    assert((0 != buffer || 0 == size) && 0 != internal);
+#if defined(_WIN32)
+    assert(0 != buffer || 0 == size);
+#else
+    assert((0 != buffer && MAP_FAILED != buffer) || 0 == size);
+#endif
     /* quietly keep the read permission, but eventually revoke write permissions */
     if (0 == (LIBXSMM_MALLOC_FLAG_W & flags) || 0 != (LIBXSMM_MALLOC_FLAG_X & flags)) {
       const int alignment = (int)(((const char*)(*memory)) - ((const char*)buffer));
       const size_t alloc_size = size + alignment;
-      /* treat memory protection errors as soft error if the requested buffer is not executable */
-      int soft_error = 0;
       if (0 == (LIBXSMM_MALLOC_FLAG_X & flags)) {
 #if defined(_WIN32)
         /* TODO: implement memory protection under Microsoft Windows */
-        LIBXSMM_UNUSED(internal); LIBXSMM_UNUSED(alloc_size); LIBXSMM_UNUSED(soft_error);
+        LIBXSMM_UNUSED(alloc_size);
 #else
-        soft_error = mprotect(buffer, alloc_size/*entire memory region*/, PROT_READ);
+        /* treat memory protection errors as soft error; ignore return value */
+        mprotect(buffer, alloc_size/*entire memory region*/, PROT_READ);
 #endif
       }
       else {
         void *const code_ptr =
 #if !defined(_WIN32)
-          0 != (LIBXSMM_MALLOC_FLAG_MMAP & flags) ? ((void*)(((char*)internal->reloc) + alignment)) :
+          0 != (LIBXSMM_MALLOC_FLAG_MMAP & flags) ? ((void*)(((char*)info->reloc) + alignment)) :
 #endif
-          buffer;
+          *memory;
         assert(0 != (LIBXSMM_MALLOC_FLAG_X & flags));
         if (name && *name) { /* profiler support requested */
-          FILE *const code_file = fopen(name, "wb");
-          if (0 != code_file) { /* dump byte-code into a file and print function pointer and filename */
-            fprintf(stderr, "LIBXSMM-JIT-DUMP(ptr:file) %p : %s\n", code_ptr, name);
-            fwrite(code_ptr, 1, size, code_file);
-            fclose(code_file);
+          if (0 > libxsmm_verbosity) { /* avoid dump when only the profiler is enabled */
+            FILE *const code_file = fopen(name, "wb");
+            if (0 != code_file) { /* dump byte-code into a file and print function pointer and filename */
+              fprintf(stderr, "LIBXSMM-JIT-DUMP(ptr:file) %p : %s\n", code_ptr, name);
+              fwrite(code_ptr, 1, size, code_file);
+              fclose(code_file);
+            }
           }
 #if defined(LIBXSMM_VTUNE)
           if (iJIT_SAMPLING_ON == iJIT_IsProfilingActive()) {
@@ -549,10 +594,10 @@ LIBXSMM_API_DEFINITION int libxsmm_malloc_attrib(void** memory, int flags, const
             const unsigned int code_id = iJIT_GetNewMethodID();
             internal_get_vtune_jitdesc(code_ptr, code_id, size, name, &vtune_jit_desc);
             iJIT_NotifyEvent(LIBXSMM_VTUNE_JIT_LOAD, &vtune_jit_desc);
-            internal->code_id = code_id;
+            info->code_id = code_id;
           }
           else {
-            internal->code_id = 0;
+            info->code_id = 0;
           }
 #endif
 #if defined(LIBXSMM_PERF)
@@ -566,35 +611,45 @@ LIBXSMM_API_DEFINITION int libxsmm_malloc_attrib(void** memory, int flags, const
 #if defined(_WIN32)
           /* TODO: implement memory protection under Microsoft Windows */
 #else
+          /* memory is already protected at this point; relocate code */
+          assert(info->pointer != info->reloc);
           *memory = code_ptr; /* relocate */
-          info->pointer = internal->reloc;
-          internal->reloc = 0;
-          if (0 != buffer && MAP_FAILED != buffer) {
-            soft_error = munmap(buffer, alloc_size);
-          }
+          info->pointer = info->reloc;
+          info->reloc = 0;
+# if !defined(LIBXSMM_MALLOC_NOCRC) /* update checksum */
+          info->hash = libxsmm_crc32(info, /* info size minus actual hash value */
+            sizeof(internal_malloc_info_type) - sizeof(unsigned int), LIBXSMM_MALLOC_SEED);
+# endif
+          /* treat memory protection errors as soft error; ignore return value */
+          munmap(buffer, alloc_size);
 #endif
         }
 #if !defined(_WIN32)
         else { /* malloc-based fall-back */
-          /* mprotect memory region according to the requested flags */
-          soft_error = mprotect(buffer, alloc_size/*entire memory region*/, PROT_READ | PROT_EXEC);
-          if (0/*ok*/ != soft_error) result = EXIT_FAILURE; /* error cannot be ignored */
+# if !defined(LIBXSMM_MALLOC_NOCRC) && defined(LIBXSMM_VTUNE) /* update checksum */
+          info->hash = libxsmm_crc32(info, /* info size minus actual hash value */
+            sizeof(internal_malloc_info_type) - sizeof(unsigned int), LIBXSMM_MALLOC_SEED);
+# endif
+          /* treat memory protection errors as soft error; ignore return value */
+          mprotect(buffer, alloc_size/*entire memory region*/, PROT_READ | PROT_EXEC);
         }
 #endif
       }
-#if !defined(NDEBUG) /* library code is expected to be mute */
-      if (0/*ok*/ != soft_error && 1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
-        const char *const error_message = strerror(errno);
-        fprintf(stderr, "LIBXSMM: %s (error #%i for range %p+%llu with flags=%i)!\n",
-          error_message, errno, buffer, (unsigned long long)alloc_size, flags);
-      }
-#endif
     }
   }
-  else {
+  else if (0 == memory || 0 == *memory) {
 #if !defined(NDEBUG) /* library code is expected to be mute */
     if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
       fprintf(stderr, "LIBXSMM: libxsmm_malloc_attrib failed because NULL cannot be attributed!\n");
+    }
+#endif
+    result = EXIT_FAILURE;
+  }
+  else {
+    assert(0 != memory && 0 != *memory);
+#if !defined(LIBXSMM_MALLOC_NOCRC)
+    if (1 == LIBXSMM_ATOMIC_ADD_FETCH(&error_once, 1, LIBXSMM_ATOMIC_RELAXED)) {
+      fprintf(stderr, "LIBXSMM: checksum error for memory buffer %p!\n", *memory);
     }
 #endif
     result = EXIT_FAILURE;
@@ -607,6 +662,7 @@ LIBXSMM_API_DEFINITION int libxsmm_malloc_attrib(void** memory, int flags, const
 LIBXSMM_API_DEFINITION void* libxsmm_aligned_malloc(size_t size, int alignment)
 {
   void* result = 0;
+  LIBXSMM_INIT
   return 0 == libxsmm_xmalloc(&result, size, alignment, LIBXSMM_MALLOC_FLAG_DEFAULT,
     0/*extra*/, 0/*extra_size*/) ? result : 0;
 }
@@ -621,5 +677,13 @@ LIBXSMM_API_DEFINITION void* libxsmm_malloc(size_t size)
 LIBXSMM_API_DEFINITION void libxsmm_free(const volatile void* memory)
 {
   libxsmm_xfree(memory);
+}
+
+
+LIBXSMM_API_DEFINITION size_t libxsmm_malloc_size(const volatile void* memory)
+{
+  size_t size = 0;
+  libxsmm_malloc_info(memory, &size, 0/*flags*/, 0/*extra*/);
+  return size;
 }
 

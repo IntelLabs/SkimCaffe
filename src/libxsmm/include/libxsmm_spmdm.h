@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -86,6 +86,7 @@ LIBXSMM_API int libxsmm_spmdm_get_num_createSparseSlice_blocks(
 LIBXSMM_API int libxsmm_spmdm_get_num_compute_blocks(
   const libxsmm_spmdm_handle* handle);
 
+/** This converts a dense representation of the sparse matrix to 2D array of sparse slices. */
 LIBXSMM_API void libxsmm_spmdm_createSparseSlice_fp32_thread(
   const libxsmm_spmdm_handle* handle,
   char transA,
@@ -102,6 +103,7 @@ LIBXSMM_API void libxsmm_spmdm_createSparseSlice_bfloat16_thread(
   int block_id,
   int tid, int nthreads);
 
+/** NOTE: This code currently ignores alpha input to the matrix multiply */
 LIBXSMM_API void libxsmm_spmdm_compute_fp32_thread(
   const libxsmm_spmdm_handle* handle,
   char transA,
@@ -109,11 +111,13 @@ LIBXSMM_API void libxsmm_spmdm_compute_fp32_thread(
   const float *alpha,
   libxsmm_CSR_sparseslice* A_sparse,
   const float *B,
+  char transC,
   const float *beta,
   float* C,
   int block_id,
   int tid, int nthreads);
 
+/** NOTE: This code currently ignores alpha input to the matrix multiply */
 LIBXSMM_API void libxsmm_spmdm_compute_bfloat16_thread(
   const libxsmm_spmdm_handle* handle,
   char transA,
@@ -121,6 +125,7 @@ LIBXSMM_API void libxsmm_spmdm_compute_bfloat16_thread(
   const uint16_t *alpha,
   libxsmm_CSR_sparseslice* A_sparse,
   const uint16_t *B,
+  char transC,
   const uint16_t *beta,
   float* C,
   int block_id,
