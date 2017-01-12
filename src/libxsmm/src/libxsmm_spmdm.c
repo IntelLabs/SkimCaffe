@@ -578,7 +578,6 @@ LIBXSMM_API_DEFINITION void libxsmm_spmdm_init(int M, int N, int K, int max_thre
   handle->n  = N;
   handle->k  = K;
 
-  handle->bm = (M >= 4096 || M <= 1024) ? 512 : 256;
   if (LIBXSMM_X86_AVX512_CORE <= libxsmm_target_archid) {
     internal_spmdm_createSparseSlice_fp32_thread = internal_spmdm_createSparseSlice_fp32_thread_avx512_core;
     internal_spmdm_createSparseSlice_bfloat16_thread = internal_spmdm_createSparseSlice_bfloat16_thread_avx512_core;
@@ -600,9 +599,26 @@ LIBXSMM_API_DEFINITION void libxsmm_spmdm_init(int M, int N, int K, int max_thre
     internal_spmdm_compute_bfloat16_thread = internal_spmdm_compute_bfloat16_thread_sw;
     handle->bn = 6;
   }
-  handle->bk = 128;
-  handle->mb = (handle->m + handle->bm - 1) / handle->bm;
   handle->nb = (handle->n + handle->bn - 1) / handle->bn;
+
+  handle->bm = (M >= 4096 || M <= 1024) ? 512 : 256;
+  handle->mb = (handle->m + handle->bm - 1) / handle->bm;
+
+  double load_imbalance_tolerate = 1.2;
+  int max_blocks_per_thread = (handle->mb*handle->nb + max_threads - 1)/max_threads;
+  double avg_blocks_per_thread = (double)handle->mb*handle->nb/max_threads;
+  double load_imbalance = max_blocks_per_thread/avg_blocks_per_thread;
+
+  while (load_imbalance > load_imbalance_tolerate) {
+    --handle->bm;
+    handle->mb = (handle->m + handle->bm - 1) / handle->bm;
+
+    max_blocks_per_thread = (handle->mb*handle->nb + max_threads - 1)/max_threads;
+    avg_blocks_per_thread = (double)handle->mb*handle->nb/max_threads;
+    load_imbalance = max_blocks_per_thread/avg_blocks_per_thread;
+  }
+
+  handle->bk = 128;
   handle->kb = (handle->k + handle->bk - 1) / handle->bk;
 
   /* This is temporary space needed; allocate for each different size of A */
