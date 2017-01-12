@@ -269,10 +269,10 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     for (int i = 0; i < num_compute_blocks; ++i) {
       float alpha = 1, beta = 0;
       libxsmm_spmdm_compute_fp32_thread(
-          &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'Y' : 'N' /*transB*/,
+          &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'T' : 'N' /*transB*/,
           &alpha, libxsmm_csr_weight_,
           bottom_data,
-          &beta, top_data,
+          layerparam.inner_product_param().spmdm_transpose_out() ? 'T' : 'N' /*transC*/, &beta, top_data,
           i, omp_get_thread_num(), omp_get_num_threads());
     }
 
@@ -319,12 +319,12 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
         num_of_A_col_blocks);
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[num_of_A_col_blocks*N_]*M_/t/1e9;
-#endif
 
     if (layerparam.inner_product_param().spmdm_transpose_out()) {
       memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
       mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
     }
+#endif
 
     std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {

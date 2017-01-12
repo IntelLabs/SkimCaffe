@@ -364,13 +364,23 @@ void BaseConvolutionLayer<float>::WeightAlign(){
           libxsmm_handle_[tid] = libxsmm_dnn_create_conv_handle_check( libxsmm_conv_desc_, &status );
           CHKERR_LIBXSMM_DNN( status );
 
-          libxsmm_input_[tid] = libxsmm_dnn_create_input_buffer_check( libxsmm_handle_[tid], &status );
+          float *input_buf = (float *)libxsmm_aligned_malloc(
+            libxsmm_conv_desc_.C*libxsmm_conv_desc_.H*libxsmm_conv_desc_.W*sizeof(float), 2097152);
+          libxsmm_input_[tid] = libxsmm_dnn_link_input_buffer_check(
+            libxsmm_handle_[tid], input_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status);
           CHKERR_LIBXSMM_DNN( status );
-          libxsmm_output_[tid] = libxsmm_dnn_create_output_buffer_check( libxsmm_handle_[tid], &status );
+
+          float *output_buf = (float *)libxsmm_aligned_malloc(
+            libxsmm_conv_desc_.K*libxsmm_conv_desc_.H*libxsmm_conv_desc_.W*sizeof(float), 2097152);
+          libxsmm_output_[tid] = libxsmm_dnn_link_output_buffer_check(
+            libxsmm_handle_[tid], output_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status);
           CHKERR_LIBXSMM_DNN( status );
 
           if (0 == tid) {
-            libxsmm_filter_ = libxsmm_dnn_create_filter_check( libxsmm_handle_[tid], &status );
+            float *filter_buf = (float *)libxsmm_aligned_malloc(
+              libxsmm_conv_desc_.K*libxsmm_conv_desc_.C*libxsmm_conv_desc_.R*libxsmm_conv_desc_.S*sizeof(float), 2097152);
+            libxsmm_filter_ = libxsmm_dnn_link_filter_check(
+              libxsmm_handle_[tid], filter_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
             CHKERR_LIBXSMM_DNN( status );
           }
 
