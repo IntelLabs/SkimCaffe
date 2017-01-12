@@ -59,31 +59,31 @@ static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
     float *C,
     int M, int N, int K,
     const float *bias,
-    int num_of_C_col_partitions,
-    int num_of_A_col_blocks)
+    int nb,
+    int kb)
 {
-  int nthreads = omp_get_max_threads()/num_of_C_col_partitions*num_of_C_col_partitions;
-  int nnz = A_i[M*num_of_A_col_blocks];
+  int nthreads = omp_get_max_threads()/nb*nb;
+  int nnz = A_i[M*kb];
 
 #pragma omp parallel num_threads(nthreads)
   {
     unsigned long long t = __rdtsc();
 
-    assert(nthreads%num_of_C_col_partitions == 0);
-    int num_of_C_row_partitions = nthreads/num_of_C_col_partitions;
+    assert(nthreads%nb == 0);
+    int mb = nthreads/nb;
     int tid = omp_get_thread_num();
 
     // threads are arranged in row-major way
     // so that the threads close with each other will access
     // the same A portion with constructive sharing.
-    int tid_row = tid/num_of_C_col_partitions;
-    int tid_col = tid%num_of_C_col_partitions;
+    int tid_row = tid/nb;
+    int tid_col = tid%nb;
 
-    int m_per_thread = (M + num_of_C_row_partitions - 1)/num_of_C_row_partitions;
+    int m_per_thread = (M + mb - 1)/mb;
     int m_begin = std::min(m_per_thread*tid_row, M);
     int m_end = std::min(m_begin + m_per_thread, M);
 
-    int n_per_thread = (N + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
+    int n_per_thread = (N + nb - 1)/nb;
     int n_begin = std::min(n_per_thread*tid_col, N);
     int n_end = std::min(n_begin + n_per_thread, N);
 
@@ -98,17 +98,17 @@ static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
 #define CSRMM_REPLICATE_B
 #endif
 #ifdef CSRMM_REPLICATE_B
-    const float *B_pr = B + (tid_col*num_of_C_row_partitions + tid_row)*K*n_per_thread;
+    const float *B_pr = B + (tid_col*mb + tid_row)*K*n_per_thread;
 #else
     const float *B_pr = B + tid_col*K*n_per_thread;
 #endif
 #else
     const float *B_pr = B + n_begin;
 #endif
-    float *C_pr = C + (tid_row*num_of_C_col_partitions + tid_col)*m_per_thread*n_per_thread;
+    float *C_pr = C + (tid_row*nb + tid_col)*m_per_thread*n_per_thread;
 
     int A_col_block = 0;
-    if (num_of_A_col_blocks > 1) {
+    if (kb > 1) {
       // first col block of A
       for (int m = m_begin; m < m_end; ++m) {
         int nn;
@@ -139,9 +139,9 @@ static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
 #define CSRMM_UNROLL_FACTOR (4)
 
 #define CSRMM_INNER_PROD \
-          int j_begin = A_i[num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin)]; \
-          int j_end = A_i[num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) + 1]; \
-          assert(num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) < M*num_of_A_col_blocks); \
+          int j_begin = A_i[kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin)]; \
+          int j_end = A_i[kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) + 1]; \
+          assert(kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) < M*kb); \
           int len = j_end - j_begin; \
           int rem = len%CSRMM_UNROLL_FACTOR; \
           for (int j = j_begin; j < j_begin + len - rem; j += CSRMM_UNROLL_FACTOR) { \
@@ -187,9 +187,9 @@ static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
           }
 
 #define CSRMM_INNER_PROD_WO_UNROLL \
-          int j_begin = A_i[num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin)]; \
-          int j_end = A_i[num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) + 1]; \
-          assert(num_of_A_col_blocks*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) < M*num_of_A_col_blocks); \
+          int j_begin = A_i[kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin)]; \
+          int j_end = A_i[kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) + 1]; \
+          assert(kb*m_begin + A_col_block*(m_end - m_begin) + (m - m_begin) < M*kb); \
           int len = j_end - j_begin; \
           int rem = len%CSRMM_UNROLL_FACTOR; \
           for (int j = j_begin; j < j_begin + len - rem; j += CSRMM_UNROLL_FACTOR) { \
@@ -212,7 +212,7 @@ static void /*__attribute__((noinline))*/ csrmm_fused_C_decomposed(
         }
       } // for each row
 
-      for (A_col_block = 1; A_col_block < num_of_A_col_blocks - 1; ++A_col_block) {
+      for (A_col_block = 1; A_col_block < kb - 1; ++A_col_block) {
         for (int m = m_begin; m < m_end; ++m) {
           int nn;
           for (nn = 0; nn < n_per_thread/VLEN/CSRMM_REG_BLOCK_SIZE*CSRMM_REG_BLOCK_SIZE; nn += CSRMM_REG_BLOCK_SIZE) {

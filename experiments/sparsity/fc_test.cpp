@@ -46,7 +46,7 @@ int flop_cnt = 0;
 int main(int argc, const char *argv[])
 {
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s matrix_in_matrix_market_format [N default=256] [A_col_block_size default=256]\n", argv[0]);
+    fprintf(stderr, "Usage: %s matrix_in_matrix_market_format [N default=256] [bk default=256]\n", argv[0]);
     return -1;
   }
 
@@ -72,24 +72,24 @@ int main(int argc, const char *argv[])
   // C decomposition
   typedef int idx_t;
 
-  int A_col_block_size = argc > 3 ? atoi(argv[3]) : 256;
-  int num_of_A_col_blocks = (NIN + A_col_block_size - 1)/A_col_block_size;
+  int bk = argc > 3 ? atoi(argv[3]) : 256;
+  int kb = (NIN + bk - 1)/bk;
 
-  int C_col_block_size = VLEN*CSRMM_REG_BLOCK_SIZE;
-  int num_of_C_col_partitions = (nbatch + C_col_block_size - 1)/C_col_block_size;
+  int bn = VLEN*CSRMM_REG_BLOCK_SIZE;
+  int nb = (nbatch + bn - 1)/bn;
     // C col block size -> AVX512: 256/(16*4) = 4, AVX2: 256/(8*8) = 4, SSE: 64/(4*8) = 2
-  if (nthreads < num_of_C_col_partitions) {
-    C_col_block_size = (nbatch + nthreads - 1)/nthreads;
-    num_of_C_col_partitions = (nbatch + C_col_block_size - 1)/C_col_block_size;
+  if (nthreads < nb) {
+    bn = (nbatch + nthreads - 1)/nthreads;
+    nb = (nbatch + bn - 1)/bn;
   }
-  if (nthreads%num_of_C_col_partitions != 0) {
-    fprintf(stderr, "num_of_C_col_partitions %d should divide # of threads %d\n", num_of_C_col_partitions, nthreads);
+  if (nthreads%nb != 0) {
+    fprintf(stderr, "nb %d should divide # of threads %d\n", nb, nthreads);
     return -1;
   }
-  int num_of_C_row_partitions = nthreads/num_of_C_col_partitions;
+  int num_of_C_row_partitions = nthreads/nb;
 
-  int num_of_A_row_blocks = num_of_C_row_partitions;
-  printf("num_of_A_col_blocks = %d, num_of_C_row_partitions = %d, num_of_C_col_partitions = %d\n", num_of_A_col_blocks, num_of_C_row_partitions, num_of_C_col_partitions);
+  int mb = num_of_C_row_partitions;
+  printf("mb = %d, nb = %d, kb = %d\n", num_of_C_row_partitions, nb, kb);
 
   int nnz = A->getNnz();
 
@@ -98,20 +98,20 @@ int main(int argc, const char *argv[])
   idx_t *weight_j_blocked_;
   float *weight_values_blocked_;
 
-  posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(NOUT*num_of_A_col_blocks + 1));
+  posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(NOUT*kb + 1));
   posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(idx_t)*nnz);
   posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*nnz);
 
   weight_i_blocked_[0] = 0;
   nnz = 0;
-  int i_per_row_block = (NOUT + num_of_A_row_blocks - 1)/num_of_A_row_blocks;
-  int j_per_col_block = (NIN + num_of_A_col_blocks - 1)/num_of_A_col_blocks;
+  int i_per_row_block = (NOUT + mb - 1)/mb;
+  int j_per_col_block = (NIN + kb - 1)/kb;
 
-  for (int row_block = 0; row_block < num_of_A_row_blocks; ++row_block) {
+  for (int row_block = 0; row_block < mb; ++row_block) {
     int i_begin = std::min(i_per_row_block*row_block, NOUT);
     int i_end = std::min(i_begin + i_per_row_block, NOUT);
 
-    for (int col_block = 0; col_block < num_of_A_col_blocks; ++col_block) {
+    for (int col_block = 0; col_block < kb; ++col_block) {
       int c_begin = std::min(j_per_col_block*col_block, NIN);
       int c_end = std::min(c_begin + j_per_col_block, NIN);
 
@@ -126,7 +126,7 @@ int main(int argc, const char *argv[])
               // When we have enough bits for column indices,
               // we pre-multiply it with # of columns of matrix B
 #ifdef CSRMM_REARRANGE_B
-              weight_j_blocked_[nnz] = nbatch/num_of_C_col_partitions*c;
+              weight_j_blocked_[nnz] = nbatch/nb*c;
 #else
               weight_j_blocked_[nnz] = nbatch*c;
 #endif
@@ -135,14 +135,14 @@ int main(int argc, const char *argv[])
             ++nnz;
           }
         }
-        int rowptr_idx = num_of_A_col_blocks*i_begin + col_block*(i_end - i_begin) + (i - i_begin) + 1;
-        assert(rowptr_idx <= NOUT*num_of_A_col_blocks);
+        int rowptr_idx = kb*i_begin + col_block*(i_end - i_begin) + (i - i_begin) + 1;
+        assert(rowptr_idx <= NOUT*kb);
         weight_i_blocked_[rowptr_idx] = nnz;
       }
     } // for each col block
   } // for each row block
   assert(nnz == A->getNnz());
-  assert(weight_i_blocked_[NOUT*num_of_A_col_blocks] == nnz);
+  assert(weight_i_blocked_[NOUT*kb] == nnz);
 
   size_t input_size = sizeof(float)*NIN*nbatch;
   float *input = (float *)_mm_malloc(input_size, 4096);
@@ -153,8 +153,8 @@ int main(int argc, const char *argv[])
 
   // rearrange input
   float *input_rearranged = (float *)_mm_malloc(input_size*num_of_C_row_partitions, 4096);
-  int col_block_size = (nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
-  for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
+  int col_block_size = (nbatch + nb - 1)/nb;
+  for (int col_block = 0; col_block < nb; ++col_block) {
     for (int i = 0; i < NIN; ++i) {
       for (int j = 0; j < col_block_size; ++j) {
 #ifdef CSRMM_REPLICATE_B
@@ -170,7 +170,7 @@ int main(int argc, const char *argv[])
     }
   }
 
-  size_t output_size = sizeof(float)*nthreads*((NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions)*(nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
+  size_t output_size = sizeof(float)*nthreads*((NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions)*(nbatch + nb - 1)/nb;
   float *output = (float *)_mm_malloc(output_size, 4096);
 //  float *output = (float *)malloc_huge_pages(sizeof(float)*nbatch*NOUT*(WIDTH + PAD)*(WIDTH + PAD));
   memset((void *)output, 0, output_size);
@@ -244,8 +244,8 @@ int main(int argc, const char *argv[])
         output,
         NOUT, nbatch, NIN,
         bias,
-        num_of_C_col_partitions,
-        num_of_A_col_blocks);
+        nb,
+        kb);
 
     if (j == REPEAT - 1) {
 #ifdef SNIPER
@@ -275,20 +275,20 @@ int main(int argc, const char *argv[])
   // which is not necessarily match with the original layout of output matrix C.
   float *temp_output = new float[NOUT*nbatch];
   int i_per_block = (NOUT + num_of_C_row_partitions - 1)/num_of_C_row_partitions;
-  int j_per_block = (nbatch + num_of_C_col_partitions - 1)/num_of_C_col_partitions;
+  int j_per_block = (nbatch + nb - 1)/nb;
 #pragma omp parallel for
   for (int row_block = 0; row_block < num_of_C_row_partitions; ++row_block) {
     int i_begin = std::min(i_per_block*row_block, NOUT);
     int i_end = std::min(i_begin + i_per_block, NOUT);
 
-    for (int col_block = 0; col_block < num_of_C_col_partitions; ++col_block) {
+    for (int col_block = 0; col_block < nb; ++col_block) {
       int j_begin = std::min(j_per_block*col_block, nbatch);
       int j_end = std::min(j_begin + j_per_block, nbatch);
 
       for (int i = i_begin; i < i_end; ++i) {
         for (int j = j_begin; j < j_end; ++j) {
           temp_output[i*nbatch + j] =
-              output[((row_block*num_of_C_col_partitions + col_block)*i_per_block + i - i_begin)*j_per_block + j - j_begin];
+              output[((row_block*nb + col_block)*i_per_block + i - i_begin)*j_per_block + j - j_begin];
         }
       }
     }
