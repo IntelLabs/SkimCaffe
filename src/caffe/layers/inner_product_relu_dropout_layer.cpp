@@ -20,9 +20,6 @@ namespace caffe {
 template<typename Dtype>
 InnerProductReLUDropoutLayer<Dtype>::InnerProductReLUDropoutLayer(const LayerParameter& param) :
     Layer<Dtype>(param),
-#ifndef CAFFE_USE_LIBXSMM_SPMDM
-    weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL),
-#endif
     bottom_transposed_(NULL)
 {
 
@@ -33,13 +30,7 @@ InnerProductReLUDropoutLayer<Dtype>::~InnerProductReLUDropoutLayer()
 {
   free(bottom_transposed_);
 
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
   libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
-#else
-  free(weight_values_blocked_);
-  free(weight_j_blocked_);
-  free(weight_i_blocked_);
-#endif
 }
 
 template<>
@@ -71,7 +62,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
         LOG(FATAL) << "InnerProduct layer fused with ReLU in SPMDM mode only works with ReLU using 0 negative slop";
       }
 
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
       libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
 
       int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
@@ -96,47 +86,6 @@ void InnerProductReLUDropoutLayer<float>::WeightAlign(){
         if (this->blobs_[0]->cpu_data()[i] != 0.) ++nnz_ref;
       }
       assert(nnz_weight_ == nnz_ref);
-#endif
-#else
-      if (M_%VLEN != 0) {
-        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires batch size to be a multiple of " << VLEN;
-      }
-      int num_of_C_col_partitions = 1; // M_/(VLEN*CSRMM_REG_BLOCK_SIZE);
-        // TODO: num_of_C_col_partitions is currently fixed to 1
-        // To use num_of_C_col_partitions > 1, we need to rearrange output matrix after SpMDM
-      if (omp_get_max_threads()%num_of_C_col_partitions != 0) {
-        LOG(WARNING) << "InnerProductReLUDropoutLayer in SPMDM mode performs best when num of threads is a multiple of " << num_of_C_col_partitions;
-      }
-      if (omp_get_max_threads() < num_of_C_col_partitions != 0) {
-        LOG(FATAL) << "InnerProductReLUDropoutLayer in SPMDM mode requires num of threads should not be less than " << num_of_C_col_partitions;
-      }
-
-      int num_of_A_col_blocks = K_/col_block_size;
-      posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*num_of_A_col_blocks + 1));
-      posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
-      posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
-
-      weight_i_blocked_[0] = 0;
-      int nnz = 0;
-      int nthreads = omp_get_max_threads()/num_of_C_col_partitions*num_of_C_col_partitions;
-      int i_per_thread = (N_ + nthreads - 1)/nthreads;
-      for (int tid = 0; tid < nthreads; ++tid) {
-        int ibegin = std::min(i_per_thread*tid, N_);
-        int iend = std::min(ibegin + i_per_thread, N_);
-        for (int cb = 0; cb < num_of_A_col_blocks; ++cb) {
-          for (int i = ibegin; i < iend; ++i) {
-            for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-              float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-              if (v != 0) {
-                weight_j_blocked_[nnz] = M_*j; // pre-multiply column index with the width of dense matrix to be multipled with
-                weight_values_blocked_[nnz] = v;
-                ++nnz;
-              }
-            }
-            weight_i_blocked_[num_of_A_col_blocks*ibegin + cb*(iend - ibegin) + (i - ibegin) + 1] = nnz;
-          }
-        }
-      }
 #endif
     }
     else {
@@ -261,7 +210,6 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
   caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
     double t = omp_get_wtime();
 
     int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
@@ -301,30 +249,6 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
             + negative_slope * std::min(top_data[i], float(0));
       }
     }
-#else
-    if (layerparam.inner_product_param().spmdm_transpose_in()) {
-      mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
-    }
-
-    int num_of_A_col_blocks = K_/col_block_size;
-    int num_of_C_col_partitions = 1; //M_/(VLEN*CSRMM_REG_BLOCK_SIZE);
-    double t = omp_get_wtime();
-    csrmm_fused_C_decomposed(
-        weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        layerparam.inner_product_param().spmdm_transpose_in() ? bottom_transposed_ : bottom_data,
-        top_data,
-        N_, M_, K_,
-        this->blobs_[1]->cpu_data(),
-        num_of_C_col_partitions,
-        num_of_A_col_blocks);
-    t = omp_get_wtime() - t;
-    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[num_of_A_col_blocks*N_]*M_/t/1e9;
-
-    if (layerparam.inner_product_param().spmdm_transpose_out()) {
-      memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-      mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
-    }
-#endif
 
     std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {

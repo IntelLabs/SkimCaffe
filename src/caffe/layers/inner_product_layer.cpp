@@ -17,9 +17,6 @@ namespace caffe {
 template<typename Dtype>
 InnerProductLayer<Dtype>::InnerProductLayer(const LayerParameter& param) :
     Layer<Dtype>(param),
-#ifndef CAFFE_USE_LIBXSMM_SPMDM
-    weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL),
-#endif
     bottom_transposed_(NULL)
 {
 
@@ -30,18 +27,12 @@ InnerProductLayer<Dtype>::~InnerProductLayer()
 {
   free(bottom_transposed_);
 
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
 	const LayerParameter& layerparam = this->layer_param();
 	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
     libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
   }
-#else
-  free(weight_values_blocked_);
-  free(weight_j_blocked_);
-  free(weight_i_blocked_);
-#endif
 }
 
 template<>
@@ -66,7 +57,6 @@ void InnerProductLayer<float>::WeightAlign(){
     if (!bias_term_) LOG(FATAL) << "SPMDM mode only works with bias term";
 
     if (!transpose_) {
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
       libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
 
       int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
@@ -91,28 +81,6 @@ void InnerProductLayer<float>::WeightAlign(){
         if (this->blobs_[0]->cpu_data()[i] != 0.) ++nnz_ref;
       }
       assert(nnz_weight_ == nnz_ref);
-#endif
-#else
-      int ncolblocks = K_/col_block_size;
-      posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*ncolblocks + 1));
-      posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
-      posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
-
-      weight_i_blocked_[0] = 0;
-      int nnz = 0;
-      for (int cb = 0; cb < ncolblocks; ++cb) {
-        for (int i = 0; i < N_; ++i) {
-          for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-            float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-            if (v != 0) {
-              weight_j_blocked_[nnz] = M_*j;
-              weight_values_blocked_[nnz] = v;
-              ++nnz;
-            }
-          }
-          weight_i_blocked_[cb*N_ + i + 1] = nnz;
-        }
-      }
 #endif
     }
     else {
@@ -237,7 +205,6 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
 
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
     double t = omp_get_wtime();
 
     int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
@@ -254,34 +221,6 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
 
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*nnz_weight_*M_/t/1e9;
-#else
-    if (layerparam.inner_product_param().spmdm_transpose_in()) {
-      mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
-    }
-
-    int ncolblocks = K_/col_block_size;
-    double t = omp_get_wtime();
-    csrmm(
-        weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        layerparam.inner_product_param().spmdm_transpose_in() ? bottom_transposed_ : bottom_data,
-        top_data,
-        N_, M_, K_,
-        this->blobs_[1]->cpu_data(),
-        col_block_size);
-    t = omp_get_wtime() - t;
-    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[ncolblocks*N_]*M_/t/1e9;
-
-    if (layerparam.inner_product_param().spmdm_transpose_out()) {
-//#define DBG_CSRMM
-#ifdef DBG_CSRMM
-#define ROW_TO_DEBUG (0)
-#define COL_TO_DEBUG (0)
-      printf("!!!!!%g %g\n", top_data[ROW_TO_DEBUG*M_ + COL_TO_DEBUG], top_data[COL_TO_DEBUG*M_ + ROW_TO_DEBUG]);
-#endif
-      memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-      mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
-    }
-#endif
 
 #ifndef NDEBUG
     caffe_cpu_gemm<float>(CblasNoTrans, transpose_ ? CblasNoTrans : CblasTrans,
@@ -300,15 +239,6 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
 #undef ROW_TO_DEBUG
 #undef COL_TO_DEBUG
 #endif
-
-#ifndef CAFFE_USE_LIBXSMM_SPMDM
-    if (bias_term_) {
-      // JSP: common path for AlexNet
-      caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
-          bias_multiplier_.cpu_data(),
-          this->blobs_[1]->cpu_data(), (float)1., bottom_transposed_);
-    }
-#endif
 #endif
 
 #ifndef NDEBUG
@@ -323,14 +253,12 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     }
 #endif
 
-#ifdef CAFFE_USE_LIBXSMM_SPMDM
     if (bias_term_) {
       // JSP: common path for AlexNet
       caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
           bias_multiplier_.cpu_data(),
           this->blobs_[1]->cpu_data(), (float)1., top_data);
     }
-#endif
 
     std::string name(this->layer_param_.name());
     if (total_conv_cycles.find(name) == total_conv_cycles.end()) {
