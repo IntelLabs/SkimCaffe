@@ -83,6 +83,7 @@ printf("Block: n_overall_start: %d, n_overall_end: %d, num_n: %d, last_block_n: 
 printf("Block: k_blocks: %d\n", k_blocks);
 #endif
 /* Copy in C matrix to buffer*/
+unsigned long long copy_in_c_time = __rdtsc();
 ptr_result = C + m_overall_start*handle->n + n_overall_start;
 if (LIBXSMM_FEQ(0.f, *beta)) {
   if (!last_block_n) {
@@ -217,6 +218,9 @@ else {
   }
 }
 
+copy_in_c_time = __rdtsc() - copy_in_c_time;
+unsigned long long copy_in_b_time = 0, main_time = 0;
+
 for (kb = 0; kb < k_blocks; kb++) {
   const float * LIBXSMM_RESTRICT ptr_dense;
   float * LIBXSMM_RESTRICT scratch_C_base;
@@ -228,6 +232,8 @@ for (kb = 0; kb < k_blocks; kb++) {
   k_overall_start = kb*k_block_size;
   k_overall_end   = (kb+1)*k_block_size;
   num_k = (k_overall_end - k_overall_start);
+
+  unsigned long long ttt = __rdtsc();
 
   /* Copy in B matrix*/
   if ('T' == transB || 't' == transB) {
@@ -278,6 +284,8 @@ for (kb = 0; kb < k_blocks; kb++) {
       }
     }
   }
+  copy_in_b_time += __rdtsc() - ttt;
+  ttt = __rdtsc();
 #if 0
   printf("B_col\n");
   for (k = 0; k < num_k; k++) {
@@ -507,6 +515,7 @@ for (kb = 0; kb < k_blocks; kb++) {
       }
     }
   }
+  main_time += __rdtsc() - ttt;
 } /* kb */
 #if 0
 for (m = 0; m < 3; m++) {
@@ -517,6 +526,7 @@ for (m = 0; m < 3; m++) {
 }
 #endif
 /* Copy out C matrix */
+unsigned long long copy_out_c_time = __rdtsc();
 if ('T' == transC || 't' == transC) {
   int num_m_simd = num_m / SIMD_WIDTH_FP32 * SIMD_WIDTH_FP32;
   int num_n_simd = num_n / SIMD_WIDTH_FP32 * SIMD_WIDTH_FP32;
@@ -564,4 +574,6 @@ else {
     }
   }
 }
+copy_out_c_time = __rdtsc() - copy_out_c_time;
 
+//printf("%lld %lld %lld %lld\n", copy_in_c_time, copy_in_b_time, main_time, copy_out_c_time);
