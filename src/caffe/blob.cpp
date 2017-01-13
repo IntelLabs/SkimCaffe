@@ -31,16 +31,22 @@ void Blob<Dtype>::Reshape(const vector<int>& shape) {
     shape_data_.reset(new SyncedMemory(shape.size() * sizeof(int)));
   }
   int* shape_data = static_cast<int*>(shape_data_->mutable_cpu_data());
+  bool actual_reshaping = false;
   for (int i = 0; i < shape.size(); ++i) {
     CHECK_GE(shape[i], 0);
     if (count_ != 0) {
       CHECK_LE(shape[i], INT_MAX / count_) << "blob size exceeds INT_MAX";
     }
     count_ *= shape[i];
-    shape_[i] = shape[i];
+    if (shape_[i] != shape[i]) {
+      actual_reshaping = true;
+      shape_[i] = shape[i];
+    }
     shape_data[i] = shape[i];
   }
-  if (count_ > capacity_) {
+  // We restart sync objects when there was change of shape
+  // requested count is bgger than current capacity
+  if ( (actual_reshaping == true) || (count_ > capacity_) ) {
     capacity_ = count_;
     data_.reset(new SyncedMemory(capacity_ * sizeof(Dtype)));
     connectivity_.reset(new SyncedMemory(capacity_ * sizeof(Dtype)));
@@ -98,6 +104,12 @@ void Blob<Dtype>::set_cpu_data(Dtype* data) {
 }
 
 template <typename Dtype>
+void Blob<Dtype>::set_cpu_diff(Dtype* diff) {
+  CHECK(diff);
+  diff_->set_cpu_data(diff);
+}
+
+template <typename Dtype>
 const Dtype* Blob<Dtype>::gpu_data() const {
   CHECK(data_);
   return (const Dtype*)data_->gpu_data();
@@ -151,6 +163,61 @@ Dtype* Blob<Dtype>::mutable_gpu_diff() {
   return static_cast<Dtype*>(diff_->mutable_gpu_data());
 }
 
+// begin Intel caffe
+
+template <typename Dtype>
+const Dtype* Blob<Dtype>::prv_data() const {
+  CHECK(data_);
+  return (const Dtype*)data_->prv_data();
+}
+
+template <typename Dtype>
+Dtype* Blob<Dtype>::mutable_prv_data() {
+  CHECK(data_);
+  return static_cast<Dtype*>(data_->mutable_prv_data());
+}
+
+template <typename Dtype>
+const Dtype* Blob<Dtype>::prv_diff() const {
+  CHECK(diff_);
+  return (const Dtype*)diff_->prv_data();
+}
+
+template <typename Dtype>
+Dtype* Blob<Dtype>::mutable_prv_diff() {
+  CHECK(diff_);
+  return static_cast<Dtype*>(diff_->mutable_prv_data());
+}
+
+
+template <typename Dtype>
+void Blob<Dtype>::set_prv_data_descriptor(shared_ptr<PrvMemDescr> descriptor,
+         bool same_data) {
+    CHECK(data_);
+    data_->set_prv_descriptor(descriptor, same_data);
+}
+
+template <typename Dtype>
+void Blob<Dtype>::set_prv_diff_descriptor(shared_ptr<PrvMemDescr> descriptor,
+                 bool same_data) {
+  CHECK(diff_);
+  diff_->set_prv_descriptor(descriptor, same_data);
+}
+
+template <typename Dtype>
+shared_ptr<PrvMemDescr> Blob<Dtype>::get_prv_data_descriptor() {
+  CHECK(data_);
+  return data_->prv_descriptor_;
+}
+
+template <typename Dtype>
+shared_ptr<PrvMemDescr> Blob<Dtype>::get_prv_diff_descriptor() {
+  CHECK(diff_);
+  return diff_->prv_descriptor_;
+}
+
+// end Intel caffe
+
 template <typename Dtype>
 Dtype* Blob<Dtype>::mutable_cpu_connectivity() {
   CHECK(connectivity_);
@@ -187,6 +254,17 @@ template <typename Dtype>
 void Blob<Dtype>::Update() {
   // We will perform update based on where the data is located.
   switch (data_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+    if ((diff_->head() == SyncedMemory::SYNCED_PRV) ||
+        (diff_->head() == SyncedMemory::HEAD_AT_PRV)) {
+      CHECK_EQ(true, get_prv_data_descriptor()->layout_compare(
+                get_prv_diff_descriptor()));
+      caffe_axpy<Dtype>(prv_diff_count(), Dtype(-1),
+          static_cast<const Dtype*>(diff_->prv_data()),
+          static_cast<Dtype*>(data_->mutable_prv_data()));
+      break;
+    }
   case SyncedMemory::HEAD_AT_CPU:
     // perform computation on CPU
 	caffe_cpu_eltwise_multi(count_,
@@ -381,6 +459,9 @@ template <typename Dtype>
 Dtype Blob<Dtype>::asum_data() const {
   if (!data_) { return 0; }
   switch (data_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+    return caffe_cpu_asum( prv_data_count(), prv_data());
   case SyncedMemory::HEAD_AT_CPU:
     return caffe_cpu_asum(count_, cpu_data());
   case SyncedMemory::HEAD_AT_GPU:
@@ -421,6 +502,9 @@ template <typename Dtype>
 Dtype Blob<Dtype>::asum_diff() const {
   if (!diff_) { return 0; }
   switch (diff_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+    return caffe_cpu_asum( prv_diff_count(), prv_diff());
   case SyncedMemory::HEAD_AT_CPU:
     return caffe_cpu_asum(count_, cpu_diff());
   case SyncedMemory::HEAD_AT_GPU:
@@ -463,6 +547,11 @@ Dtype Blob<Dtype>::sumsq_data() const {
   const Dtype* data;
   if (!data_) { return 0; }
   switch (data_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+      data = prv_data();
+      sumsq = caffe_cpu_dot(prv_data_count(), data, data);
+      break;
   case SyncedMemory::HEAD_AT_CPU:
     data = cpu_data();
     sumsq = caffe_cpu_dot(count_, data, data);
@@ -505,6 +594,11 @@ Dtype Blob<Dtype>::sumsq_diff() const {
   const Dtype* diff;
   if (!diff_) { return 0; }
   switch (diff_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+      diff = prv_diff();
+      sumsq = caffe_cpu_dot(prv_diff_count(), diff, diff);
+      break;
   case SyncedMemory::HEAD_AT_CPU:
     diff = cpu_diff();
     sumsq = caffe_cpu_dot(count_, diff, diff);
@@ -521,7 +615,7 @@ Dtype Blob<Dtype>::sumsq_diff() const {
   case SyncedMemory::UNINITIALIZED:
     return 0;
   default:
-    LOG(FATAL) << "Unknown SyncedMemory head state: " << data_->head();
+    LOG(FATAL) << "Unknown SyncedMemory head state: " << diff_->head();
   }
   return sumsq;
 }
@@ -543,6 +637,11 @@ void Blob<Dtype>::scale_data(Dtype scale_factor) {
   Dtype* data;
   if (!data_) { return; }
   switch (data_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+      data = mutable_prv_data();
+      caffe_scal(prv_data_count(), scale_factor, data);
+      break;
   case SyncedMemory::HEAD_AT_CPU:
     data = mutable_cpu_data();
     caffe_scal(count_, scale_factor, data);
@@ -580,6 +679,11 @@ void Blob<Dtype>::scale_diff(Dtype scale_factor) {
   Dtype* diff;
   if (!diff_) { return; }
   switch (diff_->head()) {
+  case SyncedMemory::SYNCED_PRV:
+  case SyncedMemory::HEAD_AT_PRV:
+      diff = mutable_prv_diff();
+      caffe_scal(prv_diff_count(), scale_factor, diff);
+      break;
   case SyncedMemory::HEAD_AT_CPU:
     diff = mutable_cpu_diff();
     caffe_scal(count_, scale_factor, diff);
@@ -760,6 +864,7 @@ void Blob<float>::ToProto(BlobProto* proto, bool write_diff) const {
 template <> void Blob<unsigned int>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
 template <> void Blob<int>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
 template <> void Blob<long>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
+template <> void Blob<size_t>::ToProto(BlobProto* proto, bool write_diff) const { NOT_IMPLEMENTED; }
 
 template <typename Dtype>
 void Blob<Dtype>::Snapshot(string filename, bool write_diff) const{
@@ -987,6 +1092,7 @@ void Blob<Dtype>:: WriteToNistMMIOSparse(string filename) const{
 
 INSTANTIATE_CLASS(Blob);
 template class Blob<int>;
+template class Blob<size_t>; // Intel caffe
 template class Blob<unsigned int>;
 template class Blob<long>;
 

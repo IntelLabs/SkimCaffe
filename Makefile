@@ -355,6 +355,8 @@ ifeq ($(ALLOW_LMDB_NOLOCK), 1)
 endif
 endif
 
+COMMON_FLAGS += -DMKL2017_SUPPORTED
+
 # CPU-only configuration
 ifeq ($(CPU_ONLY), 1)
 	OBJS := $(PROTO_OBJS) $(CXX_OBJS)

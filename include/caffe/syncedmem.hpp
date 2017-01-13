@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 
+#include "boost/thread/mutex.hpp" // intel caffe
 #include "caffe/common.hpp"
 
 namespace caffe {
@@ -66,10 +67,12 @@ class SyncedMemory {
   SyncedMemory()
       : cpu_ptr_(NULL), gpu_ptr_(NULL), size_(0), head_(UNINITIALIZED),
         own_cpu_data_(false), cpu_malloc_use_cuda_(false), own_gpu_data_(false),
+        own_prv_data_(false), // intel caffe
         gpu_device_(-1) {}
   explicit SyncedMemory(size_t size)
       : cpu_ptr_(NULL), gpu_ptr_(NULL), size_(size), head_(UNINITIALIZED),
         own_cpu_data_(false), cpu_malloc_use_cuda_(false), own_gpu_data_(false),
+        own_prv_data_(false), // intel caffe
         gpu_device_(-1) {}
   ~SyncedMemory();
   const void* cpu_data();
@@ -78,7 +81,18 @@ class SyncedMemory {
   void set_gpu_data(void* data);
   void* mutable_cpu_data();
   void* mutable_gpu_data();
-  enum SyncedHead { UNINITIALIZED, HEAD_AT_CPU, HEAD_AT_GPU, SYNCED };
+
+  // begin intel caffe
+  const void* cpu_ptr() const { return cpu_ptr_; }
+
+  shared_ptr<PrvMemDescr> prv_descriptor_;
+  void set_prv_descriptor(shared_ptr<PrvMemDescr> descriptor, bool same_data);
+  const void* prv_data();
+  void* mutable_prv_data();
+  // end intel caffe
+
+  enum SyncedHead { UNINITIALIZED, HEAD_AT_CPU, HEAD_AT_GPU, SYNCED,
+                    HEAD_AT_PRV, SYNCED_PRV};
   SyncedHead head() { return head_; }
   size_t size() { return size_; }
 
@@ -96,7 +110,9 @@ class SyncedMemory {
   bool own_cpu_data_;
   bool cpu_malloc_use_cuda_;
   bool own_gpu_data_;
+  bool own_prv_data_; // intel caffe
   int gpu_device_;
+  boost::mutex mtx; // intel caffe
 
   DISABLE_COPY_AND_ASSIGN(SyncedMemory);
 };  // class SyncedMemory

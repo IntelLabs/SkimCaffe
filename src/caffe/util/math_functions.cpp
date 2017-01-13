@@ -1,9 +1,11 @@
 #include <boost/math/special_functions/next.hpp>
 #include <boost/random.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <omp.h>
 #include "caffe/common.hpp"
+#include "caffe/util/cpu_info.hpp" // Intel caffe
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/rng.hpp"
 
@@ -56,6 +58,11 @@ template void caffe_cpu_gemm<long>(const CBLAS_TRANSPOSE TransA,
     const long alpha, const long* A, const long* B, const long beta,
     long* C);
 
+template void caffe_cpu_gemm<size_t>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const size_t alpha, const size_t* A, const size_t* B, const size_t beta,
+    size_t* C);
+
 template <>
 void caffe_cpu_cblas_gemm<float>(const int M, const int N, const int K,
     const float alpha, const float* A, const int lda, const float* B, const int ldb, const float beta,
@@ -96,20 +103,52 @@ void caffe_axpy<double>(const int N, const double alpha, const double* X,
 
 template <typename Dtype>
 void caffe_set(const int N, const Dtype alpha, Dtype* Y) {
-  if (alpha == 0) {
-    memset(Y, 0, sizeof(Dtype) * N);  // NOLINT(caffe/alt_fn)
+  // If we are executing parallel region already then do not start another one
+  // if also number of data to be processed is smaller than arbitrary:
+  // threashold 12*4 cachelines per thread then no parallelization is to be made
+  #ifdef _OPENMP
+
+  int nthr = omp_get_max_threads();
+  int threshold = nthr * caffe::cpu::OpenMpManager::getProcessorSpeedMHz() / 3;
+  bool run_parallel =  // Do not do parallel computation from non major threads
+       caffe::cpu::OpenMpManager::isMajorThread(boost::this_thread::get_id());
+
+  // Note: we Assume GPU's CPU path is single threaded
+  if (omp_in_parallel() == 0) {
+    // inactive parallel region may mean also batch 1,
+    // but no new threads are to be created
+    run_parallel = run_parallel && (Caffe::mode() != Caffe::GPU) &&
+                   (N >= threshold);
+  } else {
+    // If we are running active parallel region then it is CPU
+    run_parallel = run_parallel && (N >= threshold);
+  }
+
+  if (run_parallel) {
+    #pragma omp parallel for
+    for (int i = 0; i < N; ++i) {
+      Y[i] = alpha;
+    }
+
     return;
   }
-  for (int i = 0; i < N; ++i) {
-    Y[i] = alpha;
+
+  #endif
+
+  if (alpha == 0) {
+    memset(Y, 0, sizeof(Dtype) * N);  // NOLINT(caffe/alt_fn)
+  } else {
+    std::fill(Y, Y + N, alpha);
   }
 }
 
+template void caffe_set<char>(const int N, const char alpha, char* Y);
 template void caffe_set<int>(const int N, const int alpha, int* Y);
 template void caffe_set<unsigned int>(const int N, const unsigned int alpha, unsigned int* Y);
 template void caffe_set<long>(const int N, const long alpha, long* Y);
 template void caffe_set<float>(const int N, const float alpha, float* Y);
 template void caffe_set<double>(const int N, const double alpha, double* Y);
+template void caffe_set<size_t>(const int N, const size_t alpha, size_t* Y);
 
 template <>
 void caffe_add_scalar(const int N, const float alpha, float* Y) {
@@ -126,18 +165,65 @@ void caffe_add_scalar(const int N, const double alpha, double* Y) {
 }
 
 template <typename Dtype>
+void caffe_cpu_copy(const int N, const Dtype* X, Dtype* Y) {
+  if (X == Y) return;
+
+#ifdef _OPENMP
+  static const int threshold = omp_get_max_threads() *
+                          caffe::cpu::OpenMpManager::getProcessorSpeedMHz() / 3;
+  const bool run_parallel =
+#ifdef USE_MPI
+    (caffe::cpu::OpenMpManager::isMajorThread(boost::this_thread::get_id())) &&
+    (N >= threshold) &&
+    (omp_in_parallel() == 0) &&
+    (Caffe::mode() != Caffe::GPU);
+#else
+    (N >= threshold) &&
+    (omp_in_parallel() == 0) &&
+    (Caffe::mode() != Caffe::GPU) &&
+    (caffe::cpu::OpenMpManager::isMajorThread(boost::this_thread::get_id()));
+#endif
+
+  if (run_parallel) {
+    const int block_mem_size = 256*1024;
+    const int block_size = block_mem_size / sizeof(Dtype);
+    #pragma omp parallel for
+    for (int i = 0; i < N; i += block_size)
+      memcpy(Y + i, X + i,
+              (i + block_size > N) ? (N-i)*sizeof(Dtype): block_mem_size);
+
+    return;
+  }
+#endif
+
+  memcpy(Y, X, sizeof(Dtype) * N);  // NOLINT(caffe/alt_fn)
+}
+
+template void caffe_cpu_copy<int>(const int N, const int* X, int* Y);
+template void caffe_cpu_copy<unsigned int>(const int N, const unsigned int* X,
+    unsigned int* Y);
+template void caffe_cpu_copy<float>(const int N, const float* X, float* Y);
+template void caffe_cpu_copy<double>(const int N, const double* X, double* Y);
+
+template <typename Dtype>
 void caffe_copy(const int N, const Dtype* X, Dtype* Y) {
   if (X != Y) {
-    if (Caffe::mode() == Caffe::GPU) {
 #ifndef CPU_ONLY
+    if (
+#ifdef _OPENMP
+         // If there are more than one openmp thread (we are in active region)
+         // then checking Caffe::mode can create additional GPU Context
+        (omp_in_parallel() == 0) &&
+#endif
+        (Caffe::mode() == Caffe::GPU)) {
       // NOLINT_NEXT_LINE(caffe/alt_fn)
       CUDA_CHECK(cudaMemcpy(Y, X, sizeof(Dtype) * N, cudaMemcpyDefault));
-#else
-      NO_GPU;
-#endif
     } else {
-      memcpy(Y, X, sizeof(Dtype) * N);  // NOLINT(caffe/alt_fn)
+#endif
+      caffe_cpu_copy<Dtype>(N, X, Y);
+#ifndef CPU_ONLY
     }
+#endif
   }
 }
 
@@ -147,6 +233,8 @@ template void caffe_copy<unsigned int>(const int N, const unsigned int* X,
 template void caffe_copy<long>(const int N, const long* X, long* Y);
 template void caffe_copy<float>(const int N, const float* X, float* Y);
 template void caffe_copy<double>(const int N, const double* X, double* Y);
+template void caffe_copy<char>(const int N, const char* X, char* Y);
+template void caffe_copy<size_t>(const int N, const size_t* X, size_t* Y);
 
 template <>
 void caffe_scal<float>(const int N, const float alpha, float *X) {
@@ -156,6 +244,10 @@ void caffe_scal<float>(const int N, const float alpha, float *X) {
 template <>
 void caffe_scal<double>(const int N, const double alpha, double *X) {
   cblas_dscal(N, alpha, X, 1);
+}
+
+template <>
+void caffe_scal<size_t>(const int N, const size_t alpha, size_t *X) {
 }
 
 template <>
@@ -169,6 +261,10 @@ void caffe_cpu_axpby<double>(const int N, const double alpha, const double* X,
                              const double beta, double* Y) {
   cblas_daxpby(N, alpha, X, 1, beta, Y, 1);
 }
+
+template <>
+void caffe_axpy<size_t>(const int N, const size_t alpha, const size_t* X,
+    size_t* Y) { }
 
 template <>
 void caffe_add<float>(const int n, const float* a, const float* b,
@@ -418,6 +514,13 @@ double caffe_cpu_strided_dot<double>(const int n, const double* x,
   return cblas_ddot(n, x, incx, y, incy);
 }
 
+template <>
+size_t caffe_cpu_strided_dot<size_t>(const int n, const size_t* x,
+        const int incx, const size_t* y, const int incy) {
+  NOT_IMPLEMENTED;
+  return 0;
+}
+
 template <typename Dtype>
 Dtype caffe_cpu_dot(const int n, const Dtype* x, const Dtype* y) {
   return caffe_cpu_strided_dot(n, x, 1, y, 1);
@@ -429,6 +532,9 @@ float caffe_cpu_dot<float>(const int n, const float* x, const float* y);
 template
 double caffe_cpu_dot<double>(const int n, const double* x, const double* y);
 
+template
+size_t caffe_cpu_dot<size_t>(const int n, const size_t* x, const size_t* y);
+
 template <>
 void caffe_cpu_sparse_dense2csr<float>(const int M, const int N,
     float* A,
@@ -437,7 +543,7 @@ void caffe_cpu_sparse_dense2csr<float>(const int M, const int N,
 	MKL_INT info;
 	const MKL_INT job[] = {0,0,0,2,M*N,1};
 	mkl_sdnscsr(job, &M , &N , A,
-			&N , A_nonzero_buf, A_nonzero_idx_buf, A_idx_pointer_buf,  &info);
+			&N , A_nonzero_buf, A_nonzero_idx_buf, A_idx_pointer_buf,  &info); // FIXME: invalid memory access reported by inspector
 	if(info){
 		LOG(FATAL)<<"The routine is interrupted processing the "<<
 				info<<"-th row "
@@ -578,6 +684,7 @@ Dtype caffe_cpu_asum(const int n, const Dtype* x) {
 template int caffe_cpu_asum<int>(const int n, const int* x);
 template unsigned int caffe_cpu_asum<unsigned int>(const int n, const unsigned int* x);
 template long caffe_cpu_asum<long>(const int n, const long* x);
+template size_t caffe_cpu_asum<size_t>(const int n, const size_t* x);
 
 template <>
 void caffe_cpu_asum_along_col_row<float>(const int M, const int N, const float* X, float* y, bool dimen){
@@ -688,6 +795,8 @@ template
 void caffe_cpu_all_zero_mask(const int M, const int N, const unsigned int *X, unsigned int* y);
 template
 void caffe_cpu_all_zero_mask(const int M, const int N, const long *X, long* y);
+template
+void caffe_cpu_all_zero_mask(const int M, const int N, const size_t *X, size_t* y);
 
 template<typename Dtype>
 Dtype caffe_cpu_fiber_sparsity(

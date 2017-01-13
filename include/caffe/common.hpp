@@ -195,6 +195,11 @@ class Caffe {
   inline static bool root_solver() { return Get().root_solver_; }
   inline static void set_root_solver(bool val) { Get().root_solver_ = val; }
 
+  // begin intel caffe
+  inline static int iter_size() { return Get().iter_size_; }
+  inline static void set_iter_size(int val) { Get().iter_size_ = val; }
+  // end intel caffe
+
  protected:
 #ifndef CPU_ONLY
   cublasHandle_t cublas_handle_;
@@ -208,6 +213,9 @@ class Caffe {
   Brew mode_;
   int solver_count_;
   bool root_solver_;
+  // begin intel caffe
+  int iter_size_;
+  // end intel caffe
 
  private:
   // The private constructor to avoid duplicate instantiation.

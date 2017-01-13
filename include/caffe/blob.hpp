@@ -227,23 +227,48 @@ class Blob {
   const Dtype* gpu_data() const;
   const Dtype* cpu_diff() const;
   const Dtype* gpu_diff() const;
-  const Dtype* cpu_connectivity() const;
-  const Dtype* gpu_connectivity() const;
   Dtype* mutable_cpu_data();
   Dtype* mutable_gpu_data();
   Dtype* mutable_cpu_diff();
   Dtype* mutable_gpu_diff();
+
+  // begin intel caffe
+  void set_cpu_diff(Dtype* diff);
+  size_t prv_data_count() const {
+      CHECK(data_); return data_->prv_descriptor_->prv_count();}
+  size_t prv_diff_count() const {
+      CHECK(diff_); return diff_->prv_descriptor_->prv_count();}
+
+  const Dtype* prv_data() const;
+  const Dtype* prv_diff() const;
+  Dtype* mutable_prv_data();
+  Dtype* mutable_prv_diff();
+
+  void set_prv_data_descriptor(shared_ptr<PrvMemDescr> descriptor,
+                               bool same_data = false);
+  void set_prv_diff_descriptor(shared_ptr<PrvMemDescr> descriptor,
+                               bool same_data = false);
+
+  shared_ptr<PrvMemDescr> get_prv_data_descriptor();
+  shared_ptr<PrvMemDescr> get_prv_diff_descriptor();
+  // end intel caffe
+
+  void Update();
+
+  // begin for pruning
+  const Dtype* cpu_connectivity() const;
+  const Dtype* gpu_connectivity() const;
+
   Dtype* mutable_cpu_connectivity();
   Dtype* mutable_gpu_connectivity();
-  void Update();
+
   void Zerout(Dtype threshold);
   void Disconnect(DisconnectMode mode, Dtype thre, int group=1);
   inline void Connect(){ InitializeConnectivity(); }
   Dtype GetSparsity(Dtype threshold);
   Dtype GetWinogradSparsity(Dtype threshold);
-  void FromProto(const BlobProto& proto, bool reshape = true);
-  void ToProto(BlobProto* proto, bool write_diff = false) const;
-  void Snapshot(string filename = "", bool write_diff = false) const;
+
+  void InitializeConnectivity(Dtype val = 1.0);
 
   /// @brief snapshot to format of Matrix Market http://math.nist.gov/MatrixMarket/formats.html
   /// For high-mode tensors, we do 0-mode matricization.
@@ -257,6 +282,11 @@ class Blob {
   static void Write2DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1);
   static void Write3DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1, int I2);
   static void Write4DTensorToNistMMIOSparse(string filename, const Dtype *data, int I0, int I1, int I2, int I3);
+  // end for pruning
+
+  void FromProto(const BlobProto& proto, bool reshape = true);
+  void ToProto(BlobProto* proto, bool write_diff = false) const;
+  void Snapshot(string filename = "", bool write_diff = false) const;
 
   /// @brief Compute the sum of absolute values (L1 norm) of the data.
   Dtype asum_data() const;
@@ -292,8 +322,6 @@ class Blob {
   void ShareDiff(const Blob& other);
 
   bool ShapeEquals(const BlobProto& other);
-
-  void InitializeConnectivity(Dtype val = 1.0);
 
  protected:
   shared_ptr<SyncedMemory> data_;
