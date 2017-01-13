@@ -461,5 +461,6 @@ void MKLPoolingLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
 #endif
 
 INSTANTIATE_CLASS(MKLPoolingLayer);
+REGISTER_LAYER_CLASS(MKLPooling);
 }  // namespace caffe
 #endif  // #ifdef MKL2017_SUPPORTED

@@ -333,5 +333,6 @@ void MKLReLULayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
 #endif
 
 INSTANTIATE_CLASS(MKLReLULayer);
+REGISTER_LAYER_CLASS(MKLReLU);
 }  // namespace caffe
 #endif  // #ifdef MKL2017_SUPPORTED

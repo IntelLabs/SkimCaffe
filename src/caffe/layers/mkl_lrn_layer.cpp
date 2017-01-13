@@ -375,5 +375,6 @@ void MKLLRNLayer<Dtype>::CrossChannelBackward_gpu(
 #endif
 
 INSTANTIATE_CLASS(MKLLRNLayer);
+REGISTER_LAYER_CLASS(MKLLRN);
 }  // namespace caffe
 #endif  // #ifdef MKL2017_SUPPORTED
