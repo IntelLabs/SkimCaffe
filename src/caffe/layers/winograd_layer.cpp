@@ -78,7 +78,6 @@ void WinogradLayer<Dtype>::WeightAlign() {
 
   // create arrays to pointers to prepare for cuda batch sgemm
   shape.clear();
-  shape.push_back(this->num_);
   shape.push_back(tile_h_in_);
   shape.push_back(tile_w_in_);
   shape.push_back(this->group_);
@@ -86,26 +85,19 @@ void WinogradLayer<Dtype>::WeightAlign() {
   in_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
   out_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
   weight_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
-
-  shape.clear();
-  shape.push_back(tile_h_in_);
-  shape.push_back(tile_w_in_);
-  shape.push_back(this->group_);
   weight_diff_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
 
   Dtype **in_ptrs = (Dtype **)in_activation_ptrs_->mutable_cpu_data();
   Dtype **out_ptrs = (Dtype **)out_activation_ptrs_->mutable_cpu_data();
 
-  for (int n = 0; n < this->num_; ++n) {
-    for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
-      in_ptrs[n*tile_h_in_*tile_w_in_*this->group_ + j] =
-        temp1_.mutable_gpu_data() +
-        ((j/this->group_*this->num_ + n)*this->group_ + j%this->group_)*(this->conv_in_channels_/this->group_)*ntiles_h_*ntiles_w_;
+  for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
+    in_ptrs[j] =
+      temp1_.mutable_gpu_data() +
+      j*(this->conv_in_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
 
-      out_ptrs[n*tile_h_in_*tile_w_in_*this->group_ + j] = 
-        temp2_.mutable_gpu_data() +
-        ((j/this->group_*this->num_ + n)*this->group_ + j%this->group_)*(this->conv_out_channels_/this->group_)*ntiles_h_*ntiles_w_;
-    }
+    out_ptrs[j] =
+      temp2_.mutable_gpu_data() +
+      j*(this->conv_out_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
   }
 
   weight_ptrs_initialized_ = false;
