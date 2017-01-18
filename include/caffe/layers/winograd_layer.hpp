@@ -98,6 +98,8 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   shared_ptr<Blob<long> >
     in_activation_ptrs_, out_activation_ptrs_, weight_ptrs_, weight_diff_ptrs_;
     /** buffer for pointers to be passed to cubalsSgemmBatched */
+
+  bool weight_ptrs_initialized_, weight_diff_ptrs_initialized_;
 };
 
 }  // namespace caffe

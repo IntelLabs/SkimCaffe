@@ -14,6 +14,7 @@
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
 #include "caffe/layers/conv_relu_pool_layer.hpp"
 #include "caffe/util/sconv.hpp"
+#include "caffe/util/winograd.hpp"
 
 namespace caffe {
 
@@ -633,7 +634,54 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   // overly large memory usage. In the special case of 1x1 convolution
   // it goes lazily unused to save memory.
   col_buffer_shape_.clear();
-  col_buffer_shape_.push_back(kernel_dim_ * group_ * num_);
+  if (this->type() == "Winograd") {
+    int height = conv_input_shape_.cpu_data()[1], width = conv_input_shape_.cpu_data()[2];
+    int kernel_h = kernel_shape_.cpu_data()[0], kernel_w = kernel_shape_.cpu_data()[1];
+    int stride_h = stride_.cpu_data()[0], stride_w = stride_.cpu_data()[1];
+    int dilation_h = dilation_.cpu_data()[0], dilation_w = dilation_.cpu_data()[1];
+
+    if (stride_h != 1 || stride_w != 1 || dilation_h != 1 || dilation_w != 1) {
+      LOG(FATAL) << "non-unit stride or dilation";
+    }
+    if (kernel_h != kernel_w) {
+      LOG(FATAL) << "kernel_h != kernel_w";
+    }
+
+    WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
+
+    int tile_h_in_ = GKronG->M;
+    int tile_w_in_ = GKronG->M;
+    int tile_h_out_ = tile_h_in_ - GKronG->N + 1, tile_w_out_ = tile_w_in_ - GKronG->N + 1;
+
+    int ntiles_h_ = (height + kernel_h - 1 + tile_h_out_ - 1)/tile_h_out_;
+    int ntiles_w_ = (width + kernel_w - 1 + tile_w_out_ - 1)/tile_w_out_;
+
+    int spatial_count = 1;
+    for (int i = 0; i < num_spatial_axes_; ++i) {
+      if (reverse_dimensions()) {
+        spatial_count *= input_shape(i + 1);
+      } else {
+        spatial_count *= output_shape_[i];
+      }
+    }
+
+    int factor = ceil((double)tile_h_in_*tile_w_in_*ntiles_h_*ntiles_w_/spatial_count);
+
+//    LOG(INFO) <<
+//        "height " << height << " width " << width <<
+//        " kernel_h" << kernel_h << " kernel_w " << kernel_w <<
+//        " stride_h " << stride_h << " stride_w " << stride_w <<
+//        " dilation_h " << dilation_h << " dilation_w " << dilation_w <<
+//        " tile_h_in " << tile_h_in_ << " tile_w_in " << tile_w_in_ <<
+//        " ntiles_h " << ntiles_h_ << " ntiles_w " << ntiles_w_ <<
+//        " spatial_count " << spatial_count <<
+//        " factor " << factor;
+
+    col_buffer_shape_.push_back(std::max(conv_in_channels_, conv_out_channels_)*factor*num_);
+  }
+  else {
+    col_buffer_shape_.push_back(kernel_dim_ * group_ * num_);
+  }
   for (int i = 0; i < num_spatial_axes_; ++i) {
     if (reverse_dimensions()) {
       col_buffer_shape_.push_back(input_shape(i + 1));
