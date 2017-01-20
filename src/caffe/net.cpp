@@ -19,6 +19,7 @@
 
 #include "caffe/test/test_caffe_main.hpp"
 #include "caffe/util/benchmark.hpp"
+#include "caffe/layers/winograd_layer.hpp"
 
 namespace caffe {
 
@@ -799,12 +800,21 @@ void Net<Dtype>::ShareTrainedLayersWith(const Net* other) {
         << "Incompatible number of blobs for layer " << source_layer_name;
     for (int j = 0; j < target_blobs.size(); ++j) {
       Blob<Dtype>* source_blob = source_layer->blobs()[j].get();
+      if (target_blobs[j]->shape() != source_blob->shape() && std::string(source_layer->type()) == "Winograd") {
+        WinogradLayer<Dtype> *winograd_layer =
+            (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
+        winograd_layer->ReshapeToWinograd();
+      }
+
       CHECK(target_blobs[j]->shape() == source_blob->shape())
           << "Cannot share param " << j << " weights from layer '"
           << source_layer_name << "'; shape mismatch.  Source param shape is "
           << source_blob->shape_string() << "; target param shape is "
           << target_blobs[j]->shape_string();
       target_blobs[j]->ShareData(*source_blob);
+      if (std::string(source_layer->type()) == "Winograd") {
+        layers_[target_layer_id]->WeightAlign();
+      }
     }
   }
 }
@@ -866,6 +876,12 @@ void Net<Dtype>::CopyTrainedLayersFrom(const NetParameter& param) {
     CHECK_EQ(target_blobs.size(), source_layer.blobs_size())
         << "Incompatible number of blobs for layer " << source_layer_name;
     for (int j = 0; j < target_blobs.size(); ++j) {
+      if (!target_blobs[j]->ShapeEquals(source_layer.blobs(j)) && std::string(source_layer.type()) == "Winograd") {
+        WinogradLayer<Dtype> *winograd_layer =
+            (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
+        winograd_layer->ReshapeToWinograd();
+      }
+
       if (!target_blobs[j]->ShapeEquals(source_layer.blobs(j))) {
         Blob<Dtype> source_blob;
         const bool kReshape = true;

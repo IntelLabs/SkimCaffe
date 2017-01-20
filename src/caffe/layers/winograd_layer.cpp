@@ -23,9 +23,12 @@ void WinogradLayer<Dtype>::compute_output_shape() {
 }
 
 template <typename Dtype>
-void WinogradLayer<Dtype>::WeightAlign() {
-  BaseConvolutionLayer<Dtype>::WeightAlign();
+bool WinogradLayer<Dtype>::IsReshapedToWinograd() {
+  return !(this->blobs_[0]->shape(2) == this->blobs_[0]->shape(3) && (this->blobs_[0]->shape(2) == 3 || this->blobs_[0]->shape(2) == 5));
+}
 
+template <typename Dtype>
+void WinogradLayer<Dtype>::ReshapeToWinograd() {
   int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
   int kernel_h = this->kernel_shape_.cpu_data()[0], kernel_w = this->kernel_shape_.cpu_data()[1];
   int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
@@ -47,7 +50,52 @@ void WinogradLayer<Dtype>::WeightAlign() {
   ntiles_h_ = (height + kernel_h - 1 + tile_h_out_ - 1)/tile_h_out_;
   ntiles_w_ = (width + kernel_w - 1 + tile_w_out_ - 1)/tile_w_out_;
 
-  // temp_ is stored in transposed form
+  if (!IsReshapedToWinograd()) {
+    // not yet reshaped
+    vector<int> shape;
+    shape.push_back(tile_h_in_);
+    shape.push_back(tile_w_in_);
+    shape.push_back(this->conv_out_channels_);
+    shape.push_back(this->conv_in_channels_/this->group_);
+    this->blobs_[0]->Reshape(shape);
+  }
+}
+
+template <typename Dtype>
+void WinogradLayer<Dtype>::WeightAlign() {
+  BaseConvolutionLayer<Dtype>::WeightAlign();
+
+  int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
+  int kernel_h = this->kernel_shape_.cpu_data()[0], kernel_w = this->kernel_shape_.cpu_data()[1];
+  int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
+  int dilation_h = this->dilation_.cpu_data()[0], dilation_w = this->dilation_.cpu_data()[1];
+
+  if (stride_h != 1 || stride_w != 1 || dilation_h != 1 || dilation_w != 1) {
+    LOG(FATAL) << "non-unit stride or dilation";
+  }
+  if (kernel_h != kernel_w) {
+    LOG(FATAL) << "kernel_h != kernel_w";
+  }
+
+  if (!IsReshapedToWinograd()) {
+    // transform weights to Winograd domain
+    Dtype* weight_orig = new Dtype[this->blobs_[0]->count()];
+    memcpy(weight_orig, this->blobs_[0]->cpu_data(), sizeof(Dtype)*this->blobs_[0]->count());
+
+    ReshapeToWinograd();
+
+    WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
+    caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans,
+        tile_h_in_*tile_w_in_, (this->conv_in_channels_/this->group_)*this->conv_out_channels_, kernel_h*kernel_w,
+        (Dtype)1, GKronG->get()->cpu_data(), weight_orig,
+        (Dtype)0, this->blobs_[0]->mutable_cpu_data());
+    delete[] weight_orig;
+  }
+  else {
+    ReshapeToWinograd();
+  }
+
+  // create temporary buffers
   vector<int> shape;
   shape.push_back(this->num_);
   shape.push_back(tile_h_in_*tile_w_in_);
@@ -56,25 +104,6 @@ void WinogradLayer<Dtype>::WeightAlign() {
 
   temp1_.Reshape(shape);
   temp2_.Reshape(shape);
-
-  // transform weights to Winograd domain
-  Dtype* weight_orig = new Dtype[this->blobs_[0]->count()];
-  memcpy(weight_orig, this->blobs_[0]->cpu_data(), sizeof(Dtype)*this->blobs_[0]->count());
-
-  shape.clear();
-  shape.push_back(tile_h_in_);
-  shape.push_back(tile_w_in_);
-  shape.push_back(this->conv_out_channels_);
-  shape.push_back(this->conv_in_channels_/this->group_);
-  this->blobs_[0]->Reshape(shape);
-
-  LOG(INFO) << this->blobs_[0]->shape_string();
-
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans,
-      tile_h_in_*tile_w_in_, (this->conv_in_channels_/this->group_)*this->conv_out_channels_, kernel_h*kernel_w,
-      (Dtype)1, GKronG->get()->cpu_data(), weight_orig,
-      (Dtype)0, this->blobs_[0]->mutable_cpu_data());
-  delete[] weight_orig;
 
   // create arrays to pointers to prepare for cuda batch sgemm
   shape.clear();

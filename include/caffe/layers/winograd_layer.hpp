@@ -67,6 +67,8 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   virtual inline const char* type() const { return "Winograd"; }
 
   virtual void WeightAlign();
+  bool IsReshapedToWinograd();
+  void ReshapeToWinograd();
 
  protected:
   virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
