@@ -800,7 +800,9 @@ void Net<Dtype>::ShareTrainedLayersWith(const Net* other) {
         << "Incompatible number of blobs for layer " << source_layer_name;
     for (int j = 0; j < target_blobs.size(); ++j) {
       Blob<Dtype>* source_blob = source_layer->blobs()[j].get();
-      if (target_blobs[j]->shape() != source_blob->shape() && std::string(source_layer->type()) == "Winograd") {
+      bool needToReshapeWinograd = target_blobs[j]->shape() != source_blob->shape() && std::string(source_layer->type()) == "Winograd";
+      if (needToReshapeWinograd) {
+        LOG(INFO) << source_blob->shape_string() << " " << target_blobs[j]->shape_string();
         WinogradLayer<Dtype> *winograd_layer =
             (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
         winograd_layer->ReshapeToWinograd();
@@ -812,7 +814,8 @@ void Net<Dtype>::ShareTrainedLayersWith(const Net* other) {
           << source_blob->shape_string() << "; target param shape is "
           << target_blobs[j]->shape_string();
       target_blobs[j]->ShareData(*source_blob);
-      if (std::string(source_layer->type()) == "Winograd") {
+
+      if (needToReshapeWinograd) {
         layers_[target_layer_id]->WeightAlign();
       }
     }
