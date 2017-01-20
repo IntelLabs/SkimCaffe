@@ -1079,7 +1079,7 @@ Dtype SGDSolver<Dtype>::GetSparsity(int param_id) {
   Dtype sparsity = Dtype(0);
   Blob<Dtype> *param = net_params[param_id];
 
-  if (param->num_axes() == 4 && param->shape()[0] == param->shape()[1] && (param->shape()[0] == 6 || param->shape()[0] == 8)) {
+  if (param->num_axes() == 4 && param->shape(0) == param->shape(1) && (param->shape(0) == 6 || param->shape(0) == 8)) {
     // Winograd layer
     int N = param->shape()[2];
     int C = param->shape()[3];
@@ -1164,7 +1164,7 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsityOld(int param_id) {
   Dtype sparsity = Dtype(0);
   Blob<Dtype> *param = net_params[param_id];
 
-  if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+  if (param->num_axes() == 4 && param->shape(2) == param->shape(3) && (param->shape(2) == 3 || param->shape(2) == 5)) {
     int N = param->shape()[0];
     int C = param->shape()[1];
     int K = param->shape()[2];
