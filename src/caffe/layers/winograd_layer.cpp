@@ -47,8 +47,13 @@ void WinogradLayer<Dtype>::ReshapeToWinograd() {
   tile_w_in_ = GKronG->M;
   tile_h_out_ = tile_h_in_ - GKronG->N + 1, tile_w_out_ = tile_w_in_ - GKronG->N + 1;
 
-  ntiles_h_ = (height + kernel_h - 1 + tile_h_out_ - 1)/tile_h_out_;
-  ntiles_w_ = (width + kernel_w - 1 + tile_w_out_ - 1)/tile_w_out_;
+  int pad_h = this->pad_.cpu_data()[0], pad_w = this->pad_.cpu_data()[1];
+  int output_h = (height + 2*pad_h - dilation_h*(kernel_h - 1) - 1)/stride_h + 1, output_w = (width + 2*pad_w - dilation_w*(kernel_w - 1) - 1)/stride_w + 1;
+
+  // to cover input image: (ntiles_h_ - 1)*tile_h_out_ + (tile_h_in_ - 1) - pad_h >= height - 1 => ntiles_h_ > (height + pad_h - tile_h_in_)/tile_h_out_
+  // to cover output image: ntiles_h_ >= output_h/tile_h_out_
+  ntiles_h_ = (std::max(height + pad_h - tile_h_in_ + 1, output_h) + tile_h_out_ - 1)/tile_h_out_;
+  ntiles_w_ = (std::max(width + pad_w - tile_w_in_ + 1, output_w) + tile_w_out_ - 1)/tile_w_out_;
 
   if (!IsReshapedToWinograd()) {
     // not yet reshaped
