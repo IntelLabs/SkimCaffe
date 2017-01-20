@@ -634,7 +634,7 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   // overly large memory usage. In the special case of 1x1 convolution
   // it goes lazily unused to save memory.
   col_buffer_shape_.clear();
-  if (this->type() == "Winograd") {
+  if (std::string(this->type()) == "Winograd") {
     int height = conv_input_shape_.cpu_data()[1], width = conv_input_shape_.cpu_data()[2];
     int kernel_h = kernel_shape_.cpu_data()[0], kernel_w = kernel_shape_.cpu_data()[1];
     int stride_h = stride_.cpu_data()[0], stride_w = stride_.cpu_data()[1];
