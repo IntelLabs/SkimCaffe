@@ -227,6 +227,29 @@ void InnerProductReLUDropoutLayer<float>::Forward_cpu(const vector<Blob<float>*>
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*nnz_weight_*M_/t/1e9;
 
+#ifndef NDEBUG
+    if (layerparam.inner_product_param().spmdm_transpose_out()) {
+      caffe_cpu_gemm<float>(layerparam.inner_product_param().spmdm_transpose_in() ? CblasNoTrans : CblasTrans, transpose_ ? CblasNoTrans : CblasTrans,
+          M_, N_, K_, (float)1.,
+          bottom_data, weight, (float)0., bottom_transposed_);
+    }
+    else {
+      caffe_cpu_gemm<float>(transpose_ ? CblasTrans : CblasNoTrans, layerparam.inner_product_param().spmdm_transpose_in() ? CblasTrans : CblasNoTrans,
+          N_, M_, K_, (float)1.,
+          weight, bottom_data, (float)0., bottom_transposed_);
+    }
+
+    for (int i = 0; i < M_; ++i) {
+      for (int j = 0; j < N_; ++j) {
+        float expected = bottom_transposed_[i*N_ + j];
+        float actual = top_data[i*N_ + j];
+        if (fabs(actual - expected)/fabs(expected) > 1e-1 && fabs(expected) > 1e-4) {
+          LOG(FATAL) << "(" << i << ", " << j << ") " << expected << " expected " << actual << " actual";
+        }
+      }
+    }
+#endif // !NDEBUG
+
     if (bias_term_) {
       // JSP: common path for AlexNet
       caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
