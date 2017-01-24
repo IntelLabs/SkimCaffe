@@ -14,11 +14,11 @@
 #include "caffe/common.hpp"
 #include "caffe/util/math_functions_intel.hpp"
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
+#include "caffe/util/cpu_info.hpp"
 #include "caffe/util/sconv.hpp"
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, pool_cycle;
 
-synk::Barrier *barriers[256];
 int flop_cnt = 0;
 
 static const double DEFAULT_CPU_FREQ = 3.33e9;
@@ -92,32 +92,19 @@ static void __attribute__((noinline)) sconv2_fused(
     // pooling (for the case when pooling is fused with convolution)
     float *pool_top, int *mask,
     // output features
-    float *output, int out_channels)
+    float *output, int oc_begin, int oc_end,
+    int nthreads_per_group, int tid_in_group, int in_channels)
 {
-  int nthreads = omp_get_num_threads();
-  int tid = omp_get_thread_num();
+  static const int OC_BLOCK = 8;
 
   int WIDTH = 27;
   int WOUT = 27;
   int PAD = 2;
 
-  int nthread_groups = nthreads;
-#ifdef __AVX512F__
-//  nthread_groups = NTILES;
-#endif
-  assert(nthreads%nthread_groups == 0);
-  int nthreads_per_group = nthreads/nthread_groups;
-  int gid = tid/nthreads_per_group;
-  int tid_in_group = tid%nthreads_per_group;
-
-  int c_per_thread = (out_channels/8 + nthreads_per_group - 1)/nthreads_per_group;
-  int c_begin = std::min(c_per_thread*tid_in_group, out_channels/8);
-  int c_end = std::min(c_begin + c_per_thread, out_channels/8);
-
-  for (int oc = c_begin*8; oc < c_end*8; ++oc) {
+  for (int oc = oc_begin; oc < oc_end; ++oc) {
     unsigned long long t = __rdtsc();
 
-    int out_channel_offset = tid_in_group*8 + oc%8;
+    int out_channel_offset = tid_in_group*OC_BLOCK + oc%OC_BLOCK;
 
     int j;
     int jbegin = rowptr[oc];
@@ -221,6 +208,7 @@ static void __attribute__((noinline)) sconv2_fused(
       sum[5][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 5)*(WIDTH + PAD) + WBEGIN + 8), sum[5][1]); \
       sum[6][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 6)*(WIDTH + PAD) + WBEGIN), sum[6][0]); \
       sum[6][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 6)*(WIDTH + PAD) + WBEGIN + 8), sum[6][1]); \
+      assert(off + (HBEGIN + 6)*(WIDTH + PAD) + WBEGIN + 16 <= in_channels*(WIDTH + PAD)*(WIDTH + PAD) + PAD*(WIDTH + 2*PAD)); \
     } \
 \
     _mm256_store_ps(output + (out_channel_offset*WOUT + HBEGIN + 0)*32 + WBEGIN, sum[0][0]); \
@@ -367,18 +355,18 @@ static void __attribute__((noinline)) sconv2_fused(
 //    }
 #endif
 
-    conv_cycles_of_this_batch[tid*16] += __rdtsc() - t;
+    conv_cycles_of_this_batch[omp_get_thread_num()*16] += __rdtsc() - t;
 
 #if defined(__AVX2__) || defined(__AVX512__)
-    if (oc%8 != 7) continue;
+    if (oc%OC_BLOCK != OC_BLOCK - 1) continue;
 
     t = __rdtsc();
 
-    int t_offset = 8*tid_in_group;
+    int t_offset = OC_BLOCK*tid_in_group;
 
     // transpose to vectorize pooling layer over multiple channels
     for (int h = 0; h < WOUT; ++h) {
-      for (int w = 0; w < WOUT/8*8; w += 8) {
+      for (int w = 0; w < WOUT/OC_BLOCK*OC_BLOCK; w += OC_BLOCK) {
         __m256 v0 = _mm256_load_ps(output + (t_offset*WOUT + h)*32 + w);
         __m256 v1 = _mm256_load_ps(output + ((t_offset + 1)*WOUT + h)*32 + w);
         __m256 v2 = _mm256_load_ps(output + ((t_offset + 2)*WOUT + h)*32 + w);
@@ -406,7 +394,7 @@ static void __attribute__((noinline)) sconv2_fused(
       }
     }
 
-    if (0 == tid) transpose_cycle += __rdtsc() - t;
+    if (0 == omp_get_thread_num()) transpose_cycle += __rdtsc() - t;
     t = __rdtsc();
 
     const int STRIDE_POOL = 2;
@@ -526,228 +514,66 @@ static void __attribute__((noinline)) sconv2_fused(
       }
     }
 
-    if (0 == tid) pool_cycle += __rdtsc() - t;
+    if (0 == omp_get_thread_num()) pool_cycle += __rdtsc() - t;
 #endif
   } // for each out channel
 }
 
-static void __attribute__((noinline)) sconv2_overfeat(
+template<>
+void caffe_cpu_sconv_fused_with_relu_and_pooling(
     // input features
-    const float *input,
+    const float *input_padded, int in_channels,
+    int height, int width,
+    int pad_h, int pad_w,
+    int stride_h, int stride_w,
+    int dilation_h, int dilation_w,
     // weights
     const int *rowptr, const int *colidx, const float *values,
+    int kernel_h, int kernel_w,
     // bias (for the case when bias is fused with convolution)
     const float *bias,
     // pooling (for the case when pooling is fused with convolution)
     float *pool_top, int *mask,
     // output features
-    float *output, int out_channels)
+    float *output,
+    int out_channels,
+    int ninputs)
 {
-  int nthreads = omp_get_num_threads();
-  int tid = omp_get_thread_num();
+  if (dilation_h == 1 == dilation_w == 1 &&
+      height == 27 && width == 27 &&
+      pad_h == 2 && pad_w == 2 &&
+      stride_h == 1 && stride_w == 1 &&
+      kernel_w == 5 && kernel_h == 5) {
 
-  int WIDTH = 28;
-  int WOUT = 24;
-  int PAD = 0;
+    static const int OC_BLOCK = 8;
 
-  int nthread_groups = nthreads;
-#ifdef __AVX512F__
-//  nthread_groups = NTILES;
-#endif
-  assert(nthreads%nthread_groups == 0);
-  int nthreads_per_group = nthreads/nthread_groups;
-  int gid = tid/nthreads_per_group;
-  int tid_in_group = tid%nthreads_per_group;
+    int nthreads_in_group = cpu::OpenMpManager::getNumThreadsInGroup(ninputs);
+    int nthread_groups = cpu::OpenMpManager::getNumThreadGroups(ninputs);
+    int nthreads_per_group = (omp_get_num_threads() + nthread_groups - 1)/nthread_groups;
+    int tid_in_group = cpu::OpenMpManager::getThreadNumInGroup(ninputs);
 
-  int c_per_thread = (out_channels/8 + nthreads_per_group - 1)/nthreads_per_group;
-  int c_begin = std::min(c_per_thread*tid_in_group, out_channels/8);
-  int c_end = std::min(c_begin + c_per_thread, out_channels/8);
+    int num_oc_blocks = (out_channels + OC_BLOCK - 1)/OC_BLOCK;
+    int oc_block_begin, oc_block_end;
+    cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+        &oc_block_begin, &oc_block_end, num_oc_blocks, ninputs);
 
-  for (int out_channel = c_begin*8; out_channel < c_end*8; ++out_channel) {
-    unsigned long long t = __rdtsc();
+    int oc_begin = std::min(oc_block_begin*OC_BLOCK, out_channels);
+    int oc_end = std::min(oc_block_end*OC_BLOCK, out_channels);
 
-    int out_channel_offset = tid_in_group*8 + out_channel%8;
-
-    int j;
-    int jbegin = rowptr[out_channel];
-    int jend = rowptr[out_channel + 1];
-    int off;
-
-#ifdef __AVX512F__
-    __m512 sum[2][12];
-    __m512 w_v;
-    __m512 bias_v = _mm512_set1_ps(bias[out_channel]);
-
-    // upper half
-    int hbegin = 0, hend = 12;
-#pragma unroll(12)
-    for (int h = hbegin; h < hend; ++h) {
-      sum[0][h - hbegin] = bias_v;
-      sum[1][h - hbegin] = bias_v;
-    }
-
-    for (j = jbegin; j < jend; ++j) {
-      w_v = _mm512_set1_ps(values[j]);
-      off = colidx[j];
-
-#pragma unroll(12)
-      for (int h = hbegin; h < hend; ++h) {
-        sum[0][h - hbegin] = _mm512_fmadd_ps(w_v, _mm512_loadu_ps(input + off + h*(WIDTH + PAD)), sum[0][h - hbegin]);
-        sum[1][h - hbegin] = _mm512_fmadd_ps(w_v, _mm512_loadu_ps(input + off + h*(WIDTH + PAD) + 16), sum[1][h - hbegin]);
-      }
-    }
-
-#pragma unroll(12)
-    for (int h = hbegin; h < hend; ++h) {
-      _mm512_storeu_ps(output + (out_channel*WOUT + h)*WOUT, sum[0][h - hbegin]);
-      _mm512_mask_storeu_ps(output + (out_channel*WOUT + h)*WOUT + 16, 0x00ff, sum[1][h - hbegin]);
-    }
-
-    // lower half
-    hbegin = 12; hend = 24;
-
-#pragma unroll(12)
-    for (int h = hbegin; h < hend; ++h) {
-      sum[0][h - hbegin] = bias_v;
-      sum[1][h - hbegin] = bias_v;
-    }
-
-    for (j = jbegin; j < jend; ++j) {
-      w_v = _mm512_set1_ps(values[j]);
-      off = colidx[j];
-
-#pragma unroll(12)
-      for (int h = hbegin; h < hend; ++h) {
-        sum[0][h - hbegin] = _mm512_fmadd_ps(w_v, _mm512_loadu_ps(input + off + h*(WIDTH + PAD)), sum[0][h - hbegin]);
-        sum[1][h - hbegin] = _mm512_fmadd_ps(w_v, _mm512_loadu_ps(input + off + h*(WIDTH + PAD) + 16), sum[1][h - hbegin]);
-      }
-    }
-
-#pragma unroll(12)
-    for (int h = hbegin; h < hend; ++h) {
-      _mm512_storeu_ps(output + (out_channel*WOUT + h)*WOUT, sum[0][h - hbegin]);
-      _mm512_mask_storeu_ps(output + (out_channel*WOUT + h)*WOUT + 16, 0x00ff, sum[1][h - hbegin]);
-    }
-#else
-    __m256 sum[5][3];
-    __m256 w_v;
-    __m256 bias_v = _mm256_set1_ps(bias[out_channel]);
-
-    // (0, 0) block
-
-#undef MY_FMADD
-#define MY_FMADD(HBEGIN, WBEGIN) \
-    sum[0][0] = bias_v; \
-    sum[0][1] = bias_v; \
-    sum[0][2] = bias_v; \
-    sum[1][0] = bias_v; \
-    sum[1][1] = bias_v; \
-    sum[1][2] = bias_v; \
-    sum[2][0] = bias_v; \
-    sum[2][1] = bias_v; \
-    sum[2][2] = bias_v; \
-    sum[3][0] = bias_v; \
-    sum[3][1] = bias_v; \
-    sum[3][2] = bias_v; \
-    sum[4][0] = bias_v; \
-    sum[4][1] = bias_v; \
-    sum[4][2] = bias_v; \
-\
-    for (j = jbegin; j < jend; ++j) { \
-      w_v = _mm256_set1_ps(values[j]); \
-      off = colidx[j]; \
-\
-      sum[0][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN), sum[0][0]); \
-      sum[0][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN + 8), sum[0][1]); \
-      sum[0][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN + 16), sum[0][2]); \
-      sum[1][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN), sum[1][0]); \
-      sum[1][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN + 8), sum[1][1]); \
-      sum[1][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN + 16), sum[1][2]); \
-      sum[2][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN), sum[2][0]); \
-      sum[2][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN + 8), sum[2][1]); \
-      sum[2][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN + 16), sum[2][2]); \
-      sum[3][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN), sum[3][0]); \
-      sum[3][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN + 8), sum[3][1]); \
-      sum[3][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN + 16), sum[3][2]); \
-      sum[4][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 4)*(WIDTH + PAD) + WBEGIN), sum[4][0]); \
-      sum[4][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 4)*(WIDTH + PAD) + WBEGIN + 8), sum[4][1]); \
-      sum[4][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 4)*(WIDTH + PAD) + WBEGIN + 16), sum[4][2]); \
-    } \
-\
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN, sum[0][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN + 8, sum[0][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN + 16, sum[0][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN, sum[1][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN + 8, sum[1][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN + 16, sum[1][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN, sum[2][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN + 8, sum[2][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN + 16, sum[2][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN, sum[3][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN + 8, sum[3][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN + 16, sum[3][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 4)*WOUT + WBEGIN, sum[4][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 4)*WOUT + WBEGIN + 8, sum[4][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 4)*WOUT + WBEGIN + 16, sum[4][2]);
-
-    MY_FMADD(0, 0);
-    MY_FMADD(5, 0);
-    MY_FMADD(10, 0);
-    MY_FMADD(15, 0);
-#undef MY_FMADD
-
-#undef MY_FMADD_REMAINDER
-#define MY_FMADD_REMAINDER(HBEGIN, WBEGIN) \
-    sum[0][0] = bias_v; \
-    sum[0][1] = bias_v; \
-    sum[0][2] = bias_v; \
-    sum[1][0] = bias_v; \
-    sum[1][1] = bias_v; \
-    sum[1][2] = bias_v; \
-    sum[2][0] = bias_v; \
-    sum[2][1] = bias_v; \
-    sum[2][2] = bias_v; \
-    sum[3][0] = bias_v; \
-    sum[3][1] = bias_v; \
-    sum[3][2] = bias_v; \
-\
-    for (j = jbegin; j < jend; ++j) { \
-      w_v = _mm256_set1_ps(values[j]); \
-      off = colidx[j]; \
-\
-      sum[0][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN), sum[0][0]); \
-      sum[0][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN + 8), sum[0][1]); \
-      sum[0][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 0)*(WIDTH + PAD) + WBEGIN + 16), sum[0][2]); \
-      sum[1][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN), sum[1][0]); \
-      sum[1][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN + 8), sum[1][1]); \
-      sum[1][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 1)*(WIDTH + PAD) + WBEGIN + 16), sum[1][2]); \
-      sum[2][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN), sum[2][0]); \
-      sum[2][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN + 8), sum[2][1]); \
-      sum[2][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 2)*(WIDTH + PAD) + WBEGIN + 16), sum[2][2]); \
-      sum[3][0] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN), sum[3][0]); \
-      sum[3][1] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN + 8), sum[3][1]); \
-      sum[3][2] = _mm256_fmadd_ps(w_v, _mm256_loadu_ps(input + off + (HBEGIN + 3)*(WIDTH + PAD) + WBEGIN + 16), sum[3][2]); \
-    } \
-\
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN, sum[0][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN + 8, sum[0][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 0)*WOUT + WBEGIN + 16, sum[0][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN, sum[1][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN + 8, sum[1][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 1)*WOUT + WBEGIN + 16, sum[1][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN, sum[2][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN + 8, sum[2][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 2)*WOUT + WBEGIN + 16, sum[2][2]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN, sum[3][0]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN + 8, sum[3][1]); \
-    _mm256_store_ps(output + (out_channel*WOUT + HBEGIN + 3)*WOUT + WBEGIN + 16, sum[3][2]);
-
-    MY_FMADD_REMAINDER(20, 0);
-#undef MY_FMADD_REMAINDER
-#endif
-
-    conv_cycles_of_this_batch[tid*16] += __rdtsc() - t;
-  } // for each out channel
+    sconv2_fused(
+      input_padded,
+      rowptr, colidx, values,
+      bias,
+      pool_top, mask,
+      output,
+      oc_begin, oc_end,
+      nthreads_per_group, tid_in_group, in_channels);
+    return;
+  }
+  else {
+    LOG(FATAL) << "Unsupported code path";
+    assert(false);
+  }
 }
 
 template<>
@@ -765,12 +591,11 @@ void caffe_cpu_sconv(
     int ncolblocks,
     // bias (for the case when bias is fused with convolution)
     const float *bias,
-    // pooling (for the case when pooling is fused with convolution)
-    float *pool_top, int *mask,
     // output features
     float *output,
     int out_channels,
-    float *output_scratch)
+    float *output_scratch,
+    int ninputs)
 {
   const int output_h = (height + 2 * pad_h -
       (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
@@ -780,27 +605,15 @@ void caffe_cpu_sconv(
   if (dilation_h != 1 || dilation_w != 1) {
     // fall through to the default path
   }
-  else if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
-      sconv2_fused(
-        input_padded,
-        rowptr, colidx, values,
-        bias,
-        pool_top, mask,
-        output,
-        out_channels);
-      return;
-  }
-  else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5) {
-    sconv2_overfeat(
-      input_padded,
-      rowptr, colidx, values,
-      bias,
-      pool_top, mask,
-      output,
-      out_channels);
-    return;
-  }
   else if (stride_h == 1 && stride_w == 1 && height == width && kernel_h == kernel_w && pad_h == pad_w) {
+    int num_oc_blocks = (out_channels + OC_BLOCK - 1)/OC_BLOCK;
+    int oc_block_begin, oc_block_end;
+    cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+        &oc_block_begin, &oc_block_end, num_oc_blocks, ninputs);
+
+    int oc_begin = std::min(oc_block_begin*OC_BLOCK, out_channels);
+    int oc_end = std::min(oc_block_end*OC_BLOCK, out_channels);
+
     if (kernel_h == 2*pad_h + 1) { // matched padding
       if (kernel_h == 1) {
         // the following sizes are used by GoogLeNet
@@ -809,7 +622,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 7) {
@@ -817,7 +631,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 14) {
@@ -825,7 +640,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 28) {
@@ -833,7 +649,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 56) {
@@ -841,7 +658,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
       }
@@ -852,7 +670,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 13) {
@@ -861,7 +680,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         // the following sizes are used by GoogLeNet
@@ -870,7 +690,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 14) {
@@ -878,7 +699,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 28) {
@@ -886,7 +708,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 56) {
@@ -894,7 +717,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         // OCR public
@@ -903,17 +727,30 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
+          return;
         }
       }
       else if (kernel_h == 5) {
+        // AlexNet conv2
+        if (height == 27) {
+          sconv_unit_stride<27, 5>(
+              input_padded,
+              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
+              bias,
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
+          return;
+        }
         // the following sizes are used by GoogLeNet
-        if (height == 7) {
+        else if (height == 7) {
           sconv_unit_stride<7, 5>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 14) {
@@ -921,15 +758,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
-          return;
-        }
-        else if (height == 27) {
-          sconv_unit_stride<27, 5>(
-              input_padded,
-              rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
-              bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
         else if (height == 28) {
@@ -937,7 +767,8 @@ void caffe_cpu_sconv(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
-              output, out_channels, output_scratch);
+              output, oc_begin, oc_end, output_scratch,
+              in_channels, out_channels);
           return;
         }
       }
@@ -947,6 +778,8 @@ void caffe_cpu_sconv(
     }
   }
   else if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {
+    // conv1 of AlexNet
+
     int WIDTH = 227;
     int STRIDE = 4;
     int K = 11;

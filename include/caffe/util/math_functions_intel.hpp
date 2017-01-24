@@ -12,10 +12,9 @@
 
 #include "SpMP/synk/barrier.hpp"
 
-extern synk::Barrier *barriers[256];
-
 namespace caffe {
 
+/** sparse convolution fused with bias term */
 template <typename Dtype>
 void caffe_cpu_sconv(
     // input features
@@ -31,12 +30,32 @@ void caffe_cpu_sconv(
     int ncolblocks,
     // bias (for the case when bias is fused with convolution)
     const Dtype *bias,
-    // pooling (for the case when pooling is fused with convolution)
-    Dtype *pool_top, int *mask,
     // output features
     Dtype *output,
     int out_channels,
-    float *output_scratch);
+    float *output_scratch,
+    int ninputs /* batch size*/);
+
+/** sparse convolution fused with bias term, relu, and pooling layer */
+template <typename Dtype>
+void caffe_cpu_sconv_fused_with_relu_and_pooling(
+    // input features
+    const Dtype *input_padded, int in_channels,
+    int height, int width,
+    int pad_h, int pad_w,
+    int stride_h, int stride_w,
+    int dilation_h, int dilation_w,
+    // weights
+    const int *rowptr, const int *colidx, const Dtype *values,
+    int kernel_h, int kernel_w,
+    // bias (for the case when bias is fused with convolution)
+    const Dtype *bias,
+    // pooling (for the case when pooling is fused with convolution)
+    float *pool_top, int *mask,
+    // output features
+    Dtype *output,
+    int out_channels,
+    int ninputs);
 
 }  // namespace caffe
 

@@ -23,12 +23,8 @@ static const int NTILES = 64; // FIXME - hardcoded for 68c KNL
 
 static const int OC_BLOCK = 16;
 
-//#define VECTORIZE_OVER_INPUTS
-
 //static const int COL_MAJOR_IC_BLOCK = 8;
 //static const int COL_MAJOR_OC_BLOCK = 64;
-
-extern synk::Barrier *barriers[256];
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle, pool_cycle;
 
@@ -46,7 +42,7 @@ static int get_col_major_ic_block(int nnz, int num_out_channels, int num_in_chan
 extern int flop_cnt;
 
 /**
- * Direct sparse convolution optimized for 3-5 layers of AlexNet
+ * Direct sparse convolution optimized for 3-5 layers of AlexNet, fused with bias term
  *
  * This version involves a lot of unaligned loads
 // JSP: AlexNet each group of conv3-5
@@ -69,34 +65,16 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
     const float *bias,
     // output features
     float *output,
-    int num_out_channels,
-    float *scratch) // scratch: 832B per OC_BLOCK
+    int output_channel_begin, int output_channel_end,
+    float *scratch,
+    int in_channels, int out_channels) // scratch: 832B per OC_BLOCK
 {
   unsigned long long t = __rdtsc();
 
   assert(PAD <= (K - 1)/2);
   assert(ncolblocks >= 1);
 
-  int nthreads = omp_get_num_threads();
-  int tid = omp_get_thread_num();
-
   const int WOUT = WIDTH + 2*PAD - K + 1;
-
-  int nthread_groups = nthreads;
-#ifdef __AVX512F__
-  nthread_groups = NTILES;
-#else
-//  nthread_groups /= 2; // 1 group per core in Xeon
-#endif
-  assert(nthreads%nthread_groups == 0);
-  int nthreads_per_group = nthreads/nthread_groups;
-  int gid = tid/nthreads_per_group;
-  int tid_in_group = tid%nthreads_per_group;
-
-  int num_oc_blocks = (num_out_channels + OC_BLOCK - 1)/OC_BLOCK;
-  int oc_blocks_per_thread = (num_oc_blocks + nthreads_per_group - 1)/nthreads_per_group;
-  int oc_block_begin = std::min(oc_blocks_per_thread*tid_in_group, num_oc_blocks);
-  int oc_block_end = std::min(oc_block_begin + oc_blocks_per_thread, num_oc_blocks);
   const int ALIGNED_W = (WOUT + 16 - 1)/16*16;
 
 #ifdef __AVX512F__
@@ -122,8 +100,8 @@ static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
 #endif
 
   if (ncolblocks > 1) {
-    for (int oc_begin = oc_block_begin*OC_BLOCK; oc_begin < oc_block_end*OC_BLOCK; oc_begin += OC_BLOCK) {
-      int oc_end = std::min(oc_begin + OC_BLOCK, num_out_channels);
+    for (int oc_begin = output_channel_begin; oc_begin < output_channel_end; oc_begin += OC_BLOCK) {
+      int oc_end = std::min(oc_begin + OC_BLOCK, output_channel_end);
 
       SIMDFPTYPE sum[REG_BLOCK_H][REG_BLOCK_W];
       SIMDFPTYPE w_v;
@@ -218,6 +196,7 @@ _Pragma("unroll(WOUT%REG_BLOCK_H)") \
 _Pragma("unroll(REG_BLOCK_W)") \
               for (int w = 0; w < REG_BLOCK_W; ++w) { \
                 sum[h - hbegin][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]); \
+                assert(off + h*(WIDTH + PAD) + VLEN*w + VLEN <= in_channels*(WIDTH + PAD)*(WIDTH + PAD) + PAD*(WIDTH + 2*PAD) + VLEN - 1); \
               } \
             } \
           }
@@ -368,7 +347,8 @@ _Pragma("unroll(REG_BLOCK_W)") \
               for (w = 0; w < REG_BLOCK_W - 1; ++w) {
                 _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
               }
-              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              assert((oc*WOUT + h)*WOUT + VLEN*w + WOUT%VLEN <= out_channels*WOUT*WOUT);
+              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]); // invalid memory access reported from inspector (called from conv_relu_pool layer)
             }
           }
         } // remainder register block
@@ -376,8 +356,8 @@ _Pragma("unroll(REG_BLOCK_W)") \
     }
   } // ncolblocks > 1
   else {
-    for (int oc_begin = oc_block_begin*OC_BLOCK; oc_begin < oc_block_end*OC_BLOCK; oc_begin += OC_BLOCK) {
-      int oc_end = std::min(oc_begin + OC_BLOCK, num_out_channels);
+    for (int oc_begin = output_channel_begin; oc_begin < output_channel_end; oc_begin += OC_BLOCK) {
+      int oc_end = std::min(oc_begin + OC_BLOCK, output_channel_end);
 
       SIMDFPTYPE sum[REG_BLOCK_H][REG_BLOCK_W];
       SIMDFPTYPE w_v;
@@ -478,20 +458,6 @@ _Pragma("unroll(REG_BLOCK_W") \
             }
           }
 
-#define SCONV_INNER_PROD_REMAINDER \
-          for (int j = jbegin; j < jend; ++j) { \
-            w_v = _MM_SET1(values[j]); \
-            off = colidx[j]; \
-   \
-_Pragma("unroll(WOUT%REG_BLOCK_H)") \
-            for (int h = hbegin; h < hend; ++h) { \
-_Pragma("unroll(REG_BLOCK_W)") \
-              for (int w = 0; w < REG_BLOCK_W; ++w) { \
-                sum[h - hbegin][w] = _MM_FMADD(w_v, _MM_LOADU(input + off + h*(WIDTH + PAD) + VLEN*w), sum[h - hbegin][w]); \
-              } \
-            } \
-          }
-
           SCONV_INNER_PROD_REMAINDER;
 
 #pragma unroll(WOUT%REG_BLOCK_H)
@@ -516,11 +482,11 @@ _Pragma("unroll(REG_BLOCK_W)") \
     }
   } // ncolblocks == 1
 
-  conv_cycles_of_this_batch[tid*16] += __rdtsc() - t;
+  conv_cycles_of_this_batch[omp_get_thread_num()*16] += __rdtsc() - t;
 }
 
 /**
- * Default un-optimized sparse convolution implementation
+ * Default un-optimized sparse convolution implementation fused with bias term
  */
 inline void caffe_cpu_sconv_default(
     // input features

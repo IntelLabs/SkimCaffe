@@ -3,6 +3,7 @@
 
 #include "caffe/layers/conv_relu_pool_layer.hpp"
 #include "caffe/util/math_functions_intel.hpp"
+#include "caffe/util/cpu_info.hpp"
 #include "caffe/util/sconv.hpp"
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16];
@@ -211,22 +212,10 @@ void ConvolutionReLUPoolLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bo
 
 #pragma omp parallel
     {
-      int nthreads = omp_get_num_threads();
       int tid = omp_get_thread_num();
 
-      int nthread_groups = nthreads;
-#ifdef __AVX512F__
-      nthread_groups = NTILES;
-#else
-//      nthread_groups /= 2; // 1 group per core in Xeon
-#endif
-      assert(nthreads%nthread_groups == 0);
-      int nthreads_per_group = nthreads/nthread_groups;
-      int gid = tid/nthreads_per_group;
-
-      int n_per_group = (this->num_ + nthread_groups - 1)/nthread_groups;
-      int n_begin = std::min(n_per_group*gid, this->num_);
-      int n_end = std::min(n_begin + n_per_group, this->num_);
+      int n_begin, n_end;
+      cpu::OpenMpManager::getBatchThreadPartition(&n_begin, &n_end, this->num_);
 
       for (int n = n_begin; n < n_end; ++n) { // JSP: this->num_ is batch size
         Dtype *middle_current = middle_data + n * this->top_dim_;
@@ -254,12 +243,11 @@ void ConvolutionReLUPoolLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bo
           // The main loop
           int len = middle_[i]->offset(0, 1);
 
-          int c_per_thread = (this->num_output_ + nthreads_per_group - 1)/nthreads_per_group;
-          int tid_in_group = tid%nthreads_per_group;
-          int cbegin = std::min(c_per_thread*tid_in_group, this->num_output_);
-          int cend = std::min(cbegin + c_per_thread, this->num_output_);
+          int cbegin, cend;
+          cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+              &cbegin, &cend, this->num_output_, this->num_);
 
-          if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
+          cpu::OpenMpManager::barrierGroup(this->num_);
 
           for (int c = cbegin; c < cend; ++c) {
             // compute offset
