@@ -46,6 +46,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <set>
 #include <vector>
 
+#include "SpMP/synk/barrier.hpp"
 
 namespace caffe {
 namespace cpu {
@@ -144,6 +145,18 @@ class OpenMpManager {
 
   static bool isMajorThread(boost::thread::id currentThread);
   static unsigned getProcessorSpeedMHz();
+
+  static int getNumThreadGroups(int batchSize);
+//  static int getNumThreadsPerGroup(int batchSize);
+  static int getThreadGroupNum(int batchSize);
+  static int getThreadNumInGroup(int batchSize);
+  static int getNumThreadsInGroup(int batchSize);
+
+  static void getBatchThreadPartition(int *begin, int *end, int batchSize);
+  static void getSimpleGroupedThreadPartition(int *begin, int *end, int work, int batchSize);
+
+  static synk::Barrier **getThreadGroupBarriers(int batchSize);
+  static void barrierGroup(int batchSize);
 
  private:
   boost::thread::id mainThreadId;

@@ -479,6 +479,125 @@ unsigned OpenMpManager::getProcessorSpeedMHz() {
   return openMpManager.collection.getProcessorSpeedMHz();
 }
 
+int OpenMpManager::getNumThreadGroups(int batchSize)
+{
+  int nthread_groups = omp_in_parallel() ? omp_get_num_threads() : omp_get_max_threads(); // TODO: may want to use 1 thread group per tile in KNL later
+  if (nthread_groups > 2*batchSize) {
+    nthread_groups = batchSize;
+  }
+  return nthread_groups;
+}
+
+static int getNumThreadsPerGroup(int batchSize)
+{
+  int nthreads = omp_in_parallel() ? omp_get_num_threads() : omp_get_max_threads();
+  int nthread_groups = OpenMpManager::getNumThreadGroups(batchSize);
+  return (nthreads + nthread_groups - 1)/nthread_groups;
+}
+
+int OpenMpManager::getThreadGroupNum(int batchSize)
+{
+  assert(omp_in_parallel());
+  return omp_get_thread_num()/getNumThreadsPerGroup(batchSize);
+}
+
+int OpenMpManager::getThreadNumInGroup(int batchSize)
+{
+  assert(omp_in_parallel());
+  return omp_get_thread_num()%getNumThreadsPerGroup(batchSize);
+}
+
+int OpenMpManager::getNumThreadsInGroup(int batchSize)
+{
+  int nthreads = omp_in_parallel() ? omp_get_num_threads() : omp_get_max_threads();
+  int nthreads_per_group = getNumThreadsPerGroup(batchSize);
+  int gid = OpenMpManager::getThreadGroupNum(batchSize);
+  return std::min(nthreads_per_group, nthreads - nthreads_per_group*gid);
+}
+
+void OpenMpManager::getBatchThreadPartition(int *begin, int *end, int batchSize)
+{
+  int nthread_groups = OpenMpManager::getNumThreadGroups(batchSize);
+  int gid = OpenMpManager::getThreadGroupNum(batchSize);
+
+  int n_per_group = (batchSize + nthread_groups - 1)/nthread_groups;
+  *begin = std::min(n_per_group*gid, batchSize);
+  *end = std::min(*begin + n_per_group, batchSize);
+}
+
+void OpenMpManager::getSimpleGroupedThreadPartition(int *begin, int *end, int work, int batchSize)
+{
+  int nthreads_in_group = OpenMpManager::getNumThreadsInGroup(batchSize);
+  int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
+
+  int workPerThread = (work + nthreads_in_group - 1)/nthreads_in_group;
+
+  *begin = std::min(workPerThread*tid_in_group, work);
+  *end = std::min(*begin + workPerThread, work);
+}
+
+synk::Barrier *threadGroupBarriers[1024];
+
+synk::Barrier **OpenMpManager::getThreadGroupBarriers(int batchSize)
+{
+  static bool initialized = false;
+
+  if (!initialized) {
+    int nthread_groups = OpenMpManager::getNumThreadGroups(batchSize);
+    int nthreads_per_group = getNumThreadsPerGroup(batchSize);
+
+    if (omp_in_parallel()) {
+      int nthreads = omp_get_num_threads();
+
+#pragma omp single
+      {
+        for (int gid = 0; gid < nthread_groups; ++gid) {
+          threadGroupBarriers[gid] = new synk::Barrier(1, std::min(nthreads_per_group, nthreads - nthreads_per_group*gid));
+        }
+      }
+
+      int gid = OpenMpManager::getThreadGroupNum(batchSize);
+      int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
+
+      threadGroupBarriers[gid]->init(tid_in_group);
+
+#pragma omp single
+      initialized = true;
+    }
+    else {
+      int nthreads = omp_get_max_threads();
+
+      for (int gid = 0; gid < nthread_groups; ++gid) {
+        threadGroupBarriers[gid] = new synk::Barrier(1, std::min(nthreads_per_group, nthreads - nthreads_per_group*gid));
+      }
+
+#pragma omp parallel
+      {
+        int gid = OpenMpManager::getThreadGroupNum(batchSize);
+        int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
+
+        threadGroupBarriers[gid]->init(tid_in_group);
+      }
+
+      initialized = true;
+    }
+  }
+
+  return threadGroupBarriers;
+}
+
+void OpenMpManager::barrierGroup(int batchSize)
+{
+  assert(omp_in_parallel());
+
+  int nthreads = omp_get_num_threads();
+  int nthread_groups = OpenMpManager::getNumThreadGroups(batchSize);
+  int gid = OpenMpManager::getThreadGroupNum(batchSize);
+  int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
+
+  if (nthread_groups != nthreads) threadGroupBarriers[gid]->wait(tid_in_group);
+}
+
 #endif  // _OPENMP
 
 }  // namespace cpu
