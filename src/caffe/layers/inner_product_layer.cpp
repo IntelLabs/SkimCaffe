@@ -222,7 +222,7 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     t = omp_get_wtime() - t;
     LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*nnz_weight_*M_/t/1e9;
 
-#ifndef NDEBUG
+#if 0 //ndef NDEBUG
     if (layerparam.inner_product_param().spmdm_transpose_out()) {
       caffe_cpu_gemm<float>(layerparam.inner_product_param().spmdm_transpose_in() ? CblasNoTrans : CblasTrans, transpose_ ? CblasNoTrans : CblasTrans,
           M_, N_, K_, (float)1.,
