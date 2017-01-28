@@ -571,12 +571,17 @@ synk::Barrier **OpenMpManager::getThreadGroupBarriers(int batchSize)
         threadGroupBarriers[gid] = new synk::Barrier(1, std::min(nthreads_per_group, nthreads - nthreads_per_group*gid));
       }
 
-#pragma omp parallel
-      {
-        int gid = OpenMpManager::getThreadGroupNum(batchSize);
-        int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
+      if (1 == omp_get_max_threads()) {
+        threadGroupBarriers[0]->init(0);
+      }
+      else {
+  #pragma omp parallel
+        {
+          int gid = OpenMpManager::getThreadGroupNum(batchSize);
+          int tid_in_group = OpenMpManager::getThreadNumInGroup(batchSize);
 
-        threadGroupBarriers[gid]->init(tid_in_group);
+          threadGroupBarriers[gid]->init(tid_in_group);
+        }
       }
 
       initialized = true;
