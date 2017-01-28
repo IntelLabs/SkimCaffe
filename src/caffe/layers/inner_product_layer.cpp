@@ -31,7 +31,15 @@ InnerProductLayer<Dtype>::~InnerProductLayer()
 	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
-    libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+    if (1 == M_) {
+      libxsmm_spmv_destroy(&libxsmm_spmv_handle_);
+    }
+    else
+#endif
+    {
+      libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
+    }
   }
 }
 
@@ -39,8 +47,6 @@ template<>
 void InnerProductLayer<double>::WeightAlign(){
   NOT_IMPLEMENTED;
 }
-
-static int col_block_size = 128;
 
 template<>
 void InnerProductLayer<float>::WeightAlign(){
@@ -57,22 +63,47 @@ void InnerProductLayer<float>::WeightAlign(){
     if (!bias_term_) LOG(FATAL) << "SPMDM mode only works with bias term";
 
     if (!transpose_) {
-      libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+      if (1 == M_) {
+        libxsmm_spmv_init(N_, K_, omp_get_max_threads(), &libxsmm_spmv_handle_, &libxsmm_csr_weight_);
 
-      int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
+        int nCreateSparseSliceBlocks = libxsmm_spmv_handle_.mb*libxsmm_spmv_handle_.kb;
+
 #pragma omp parallel for
-      for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
-        libxsmm_spmdm_createSparseSlice_fp32_thread(
-            &libxsmm_spmdm_handle_, 'N' /*transA*/,
-            this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
-      }
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          libxsmm_spmv_createSparseSlice_fp32_thread(
+              &libxsmm_spmv_handle_, 'N' /*transA*/,
+              this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
+        }
 
-      nnz_weight_ = 0;
-      for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
-        int kb = i/libxsmm_spmdm_handle_.mb;
-        int mb = i%libxsmm_spmdm_handle_.mb;
-        int nrows = std::min((mb + 1)*libxsmm_spmdm_handle_.bm, libxsmm_spmdm_handle_.m) - mb*libxsmm_spmdm_handle_.bm;
-        nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
+        nnz_weight_ = 0;
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          int kb = i/libxsmm_spmv_handle_.mb;
+          int mb = i%libxsmm_spmv_handle_.mb;
+          int nrows = std::min((mb + 1)*libxsmm_spmv_handle_.bm, libxsmm_spmv_handle_.m) - mb*libxsmm_spmv_handle_.bm;
+          nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
+        }
+      }
+      else
+#endif
+      {
+        libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
+
+        int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
+#pragma omp parallel for
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          libxsmm_spmdm_createSparseSlice_fp32_thread(
+              &libxsmm_spmdm_handle_, 'N' /*transA*/,
+              this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
+        }
+
+        nnz_weight_ = 0;
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          int kb = i/libxsmm_spmdm_handle_.mb;
+          int mb = i%libxsmm_spmdm_handle_.mb;
+          int nrows = std::min((mb + 1)*libxsmm_spmdm_handle_.bm, libxsmm_spmdm_handle_.m) - mb*libxsmm_spmdm_handle_.bm;
+          nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
+        }
       }
 
 #ifndef NDEBUG
@@ -207,16 +238,33 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
 
     double t = omp_get_wtime();
 
-    int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+    if (1 == M_) {
+#pragma omp parallel
+      {
+        float alpha = 1, beta = 0;
+        libxsmm_spmv_compute_fp32_thread(
+            &libxsmm_spmv_handle_, 'N' /*transA*/,
+            &alpha, libxsmm_csr_weight_,
+            bottom_data,
+            &beta, top_data,
+            omp_get_thread_num(), omp_get_thread_num(), omp_get_num_threads());
+      }
+    }
+    else
+#endif
+    {
+      int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
 #pragma omp parallel for
-    for (int i = 0; i < num_compute_blocks; ++i) {
-      float alpha = 1, beta = 0;
-      libxsmm_spmdm_compute_fp32_thread(
-          &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'T' : 'N' /*transB*/,
-          &alpha, libxsmm_csr_weight_,
-          bottom_data,
-          layerparam.inner_product_param().spmdm_transpose_out() ? 'T' : 'N' /*transC*/, &beta, top_data,
-          i, omp_get_thread_num(), omp_get_num_threads());
+      for (int i = 0; i < num_compute_blocks; ++i) {
+        float alpha = 1, beta = 0;
+        libxsmm_spmdm_compute_fp32_thread(
+            &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'T' : 'N' /*transB*/,
+            &alpha, libxsmm_csr_weight_,
+            bottom_data,
+            layerparam.inner_product_param().spmdm_transpose_out() ? 'T' : 'N' /*transC*/, &beta, top_data,
+            i, omp_get_thread_num(), omp_get_num_threads());
+      }
     }
 
     t = omp_get_wtime() - t;
@@ -234,7 +282,10 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
           weight, bottom_data, (float)0., bottom_transposed_);
     }
 
-#ifdef DBG_CSRMM
+//#define DBG_SPMDM
+#ifdef DBG_SPMDM
+#define ROW_TO_DEBUG (0)
+#define COL_TO_DEBUG (0)
     for (int k = 0; k < K_; ++k) {
       float w = weight[COL_TO_DEBUG*K_ + k];
       if (w != 0) {
@@ -245,6 +296,7 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
     printf("%g %g\n", top_data[ROW_TO_DEBUG*N_ + COL_TO_DEBUG], top_data[COL_TO_DEBUG*M_ + ROW_TO_DEBUG]);
 #undef ROW_TO_DEBUG
 #undef COL_TO_DEBUG
+#undef DBG_SPMDM
 #endif
 
     for (int i = 0; i < M_; ++i) {

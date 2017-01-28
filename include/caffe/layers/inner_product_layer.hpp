@@ -6,8 +6,11 @@
 #include "caffe/blob.hpp"
 #include "caffe/layer.hpp"
 #include "caffe/proto/caffe.pb.h"
+#include "caffe/util/libxsmm_spmv.h"
 
 #include "libxsmm.h"
+
+#define OPTIMIZE_FOR_UNIT_BATCH
 
 namespace caffe {
 
@@ -50,6 +53,10 @@ class InnerProductLayer : public Layer<Dtype> {
   bool transpose_;  ///< if true, assume transposed weights
 
   libxsmm_spmdm_handle libxsmm_spmdm_handle_;
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+  libxsmm_spmv_handle libxsmm_spmv_handle_; // for batch size 1
+#endif
+
   libxsmm_CSR_sparseslice *libxsmm_csr_weight_;
   int nnz_weight_;
 
