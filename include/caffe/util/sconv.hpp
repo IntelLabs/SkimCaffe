@@ -54,7 +54,7 @@ extern int flop_cnt;
 
 
  */
-template<int WIDTH, int K, int PAD = (K - 1)/2>
+template<int WIDTH, int K, bool FUSE_RELU = false, int PAD = (K - 1)/2>
 static /*inline*/ void __attribute__((noinline)) sconv_unit_stride(
     // input features
     const float *input,
@@ -294,30 +294,57 @@ _Pragma("unroll(REG_BLOCK_W)") \
 
           SCONV_INNER_PROD;
 
+          if (FUSE_RELU) {
 #pragma unroll(REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-            if (WOUT%VLEN == 0) {
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
-              }
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
 
 #ifdef DBG_SCONV
-              if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-                printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
-              }
+                if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+                  printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
+                }
 #endif
-            }
-            else {
-              int w;
-#pragma unroll(REG_BLOCK_W - 1)
-              for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
               }
-              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              else {
+                int w;
+#pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+              }
             }
-          }
-        } // remainder register block
+          } // FUSE_RELU
+          else {
+#pragma unroll(REG_BLOCK_H)
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
+#pragma unroll(REG_BLOCK_W)
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+
+#ifdef DBG_SCONV
+                if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+                  printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
+                }
+#endif
+              }
+              else {
+                int w;
+  #pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              }
+            }
+          } // !FUSE_RELU
+        }
 
         // remainder register block
         if (WOUT%REG_BLOCK_H != 0) {
@@ -333,24 +360,46 @@ _Pragma("unroll(REG_BLOCK_W)") \
 
           SCONV_INNER_PROD_REMAINDER;
 
+          if (FUSE_RELU) {
 #pragma unroll(WOUT%REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-            if (WOUT%VLEN == 0) {
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
               }
-            }
-            else {
-              int w;
+              else {
+                int w;
 #pragma unroll(REG_BLOCK_W - 1)
-              for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
+                assert((oc*WOUT + h)*WOUT + VLEN*w + WOUT%VLEN <= out_channels*WOUT*WOUT);
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO())); // invalid memory access reported from inspector (called from conv_relu_pool layer)
               }
-              assert((oc*WOUT + h)*WOUT + VLEN*w + WOUT%VLEN <= out_channels*WOUT*WOUT);
-              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]); // invalid memory access reported from inspector (called from conv_relu_pool layer)
             }
           }
+          else {
+#pragma unroll(WOUT%REG_BLOCK_H)
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
+#pragma unroll(REG_BLOCK_W)
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+              }
+              else {
+                int w;
+#pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+                assert((oc*WOUT + h)*WOUT + VLEN*w + WOUT%VLEN <= out_channels*WOUT*WOUT);
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]); // invalid memory access reported from inspector (called from conv_relu_pool layer)
+              }
+            }
+          } // !FUSE_RELU
         } // remainder register block
       } // for each output channel
     }
@@ -420,29 +469,56 @@ _Pragma("unroll(REG_BLOCK_W") \
 
           SCONV_INNER_PROD;
 
+          if (FUSE_RELU) {
 #pragma unroll(REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-            if (WOUT%VLEN == 0) {
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
-              }
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
 
 #ifdef DBG_SCONV
-              if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
-                printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
-              }
+                if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+                  printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
+                }
 #endif
-            }
-            else {
-              int w;
-#pragma unroll(REG_BLOCK_W - 1)
-              for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
               }
-              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              else {
+                int w;
+#pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+              }
             }
           }
+          else {
+#pragma unroll(REG_BLOCK_H)
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
+#pragma unroll(REG_BLOCK_W)
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+
+#ifdef DBG_SCONV
+                if (oc == CHANNEL_TO_DEBUG && h == ROW_TO_DEBUG) {
+                  printf(" = %g\n", output[(oc*WOUT + h)*WOUT + COL_TO_DEBUG]);
+                }
+#endif
+              }
+              else {
+                int w;
+#pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              }
+            }
+          } // !FUSE_RELU
         } // for each register block
 
         // remainder register block
@@ -460,23 +536,44 @@ _Pragma("unroll(REG_BLOCK_W") \
 
           SCONV_INNER_PROD_REMAINDER;
 
+          if (FUSE_RELU) {
 #pragma unroll(WOUT%REG_BLOCK_H)
-          for (int h = hbegin; h < hend; ++h) {
-            if (WOUT%VLEN == 0) {
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
 #pragma unroll(REG_BLOCK_W)
-              for (int w = 0; w < REG_BLOCK_W; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
               }
-            }
-            else {
-              int w;
+              else {
+                int w;
 #pragma unroll(REG_BLOCK_W - 1)
-              for (w = 0; w < REG_BLOCK_W - 1; ++w) {
-                _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, _MM_MAX(sum[h - hbegin][w], _MM_SETZERO()));
               }
-              _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
             }
-          }
+          } // FUSE_RELU
+          else {
+#pragma unroll(WOUT%REG_BLOCK_H)
+            for (int h = hbegin; h < hend; ++h) {
+              if (WOUT%VLEN == 0) {
+#pragma unroll(REG_BLOCK_W)
+                for (int w = 0; w < REG_BLOCK_W; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+              }
+              else {
+                int w;
+#pragma unroll(REG_BLOCK_W - 1)
+                for (w = 0; w < REG_BLOCK_W - 1; ++w) {
+                  _MM_STOREU(output + (oc*WOUT + h)*WOUT + VLEN*w, sum[h - hbegin][w]);
+                }
+                _MM_MASK_STORE(output + (oc*WOUT + h)*WOUT + VLEN*w, mask_v, sum[h - hbegin][w]);
+              }
+            }
+          } // !FUSE_RELU
         } // remainder register block
       } // for each output channel
     }
@@ -488,7 +585,8 @@ _Pragma("unroll(REG_BLOCK_W") \
 /**
  * Default un-optimized sparse convolution implementation fused with bias term
  */
-inline void caffe_cpu_sconv_default(
+template<bool FUSE_RELU = false>
+void caffe_cpu_sconv_default(
     // input features
     const float *input_padded, int in_channels,
     int height, int width,
@@ -530,7 +628,7 @@ inline void caffe_cpu_sconv_default(
             sum += values[j]*input_padded[(in_channel * (height + pad_h) + input_row) * (width + pad_w) + input_col];
           }
 
-          output[(oc * output_h + output_row) * output_w + output_col] = sum;
+          output[(oc * output_h + output_row) * output_w + output_col] = FUSE_RELU ? std::max(0.f, sum) : sum;
         }
       }
     }
@@ -559,7 +657,7 @@ inline void caffe_cpu_sconv_default(
 #endif
           }
 
-          output[(oc*output_h + output_row)*output_w + output_col] = sum;
+          output[(oc*output_h + output_row)*output_w + output_col] = FUSE_RELU ? std::max(0.f, sum) : sum;
 #ifdef DBG_SCONV
           if (oc == CHANNEL_TO_DEBUG && output_row == ROW_TO_DEBUG && output_col == COL_TO_DEBUG) {
             printf(" = %g\n", sum);

@@ -841,8 +841,27 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             M,
             num_);
 		  }
+		  else if (std::string(type()) == "ConvolutionReLU") {
+        caffe_cpu_sconv<true /*fuse-relu*/>(
+            input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
+            conv_in_channels_/group_,
+            height, width,
+            pad_h, pad_w,
+            stride_h, stride_w,
+            dilation_h, dilation_w,
+            rowptr, colidx, values,
+            kernel_h, kernel_w,
+            (const int **)(&weight_rowptr_blocked_[0] + g*ncolblock),
+            (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
+            (const float **)(&weight_values_blocked_[0] + g*ncolblock),
+            ncolblock,
+            this->blobs_[1]->cpu_data(),
+            output + output_offset_ * g,
+            M,
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16), num_);
+		  }
 		  else {
-        caffe_cpu_sconv<float>(
+        caffe_cpu_sconv(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
             conv_in_channels_/group_,
             height, width,

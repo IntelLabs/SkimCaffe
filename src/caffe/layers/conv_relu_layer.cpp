@@ -66,6 +66,10 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
   double t2 = 0, t3 = 0;
   padding_time = 0;
   Dtype negative_slope = this->layer_param_.relu_param().negative_slope();
+  if (negative_slope != 0) {
+    LOG(FATAL) << type() << " only supports negative_slope == 0";
+  }
+
   for (int i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
     Dtype* top_data = top[i]->mutable_cpu_data();
@@ -106,34 +110,11 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
           // JSP: common path of AlexNet
           this->forward_cpu_bias(top_current, bias);
         }
-
-        if (0 == tid) t3 -= omp_get_wtime();
-
-        int jbegin, jend;
-        cpu::OpenMpManager::getSimpleGroupedThreadPartition(
-            &jbegin, &jend, this->top_dim_, this->num_);
-
-        cpu::OpenMpManager::barrierGroup(this->num_);
-
-        if (negative_slope == 0) {
-          for (int j = jbegin; j < jend; ++j) {
-            top_current[j] = std::max(top_current[j], Dtype(0));
-          }
-        }
-        else {
-          for (int j = jbegin; j < jend; ++j) {
-            top_current[j] =
-                 std::max(top_current[j], Dtype(0)) +
-                 negative_slope * std::min(top_current[j], Dtype(0));
-          }
-        }
-
-        if (0 == tid) t3 += omp_get_wtime();
       }
     }
   }
 
-  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time << " relu-time " << t3;
+  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time;
 
   double flops = (double)this->num_*this->conv_out_channels_*this->conv_in_channels_/this->group_*output_h*output_w*kernel_h*kernel_w*2;
 

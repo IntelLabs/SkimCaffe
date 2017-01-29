@@ -576,7 +576,7 @@ void caffe_cpu_sconv_fused_with_relu_and_pooling(
   }
 }
 
-template<>
+template <bool FUSE_RELU>
 void caffe_cpu_sconv(
     // input features
     const float *input_padded, int in_channels,
@@ -618,7 +618,7 @@ void caffe_cpu_sconv(
       if (kernel_h == 1) {
         // the following sizes are used by GoogLeNet
         if (height == 4) {
-          sconv_unit_stride<4, 1>(
+          sconv_unit_stride<4, 1, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -627,7 +627,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 7) {
-          sconv_unit_stride<7, 1>(
+          sconv_unit_stride<7, 1, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -636,7 +636,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 14) {
-          sconv_unit_stride<14, 1>(
+          sconv_unit_stride<14, 1, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -645,7 +645,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 28) {
-          sconv_unit_stride<28, 1>(
+          sconv_unit_stride<28, 1, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -654,7 +654,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 56) {
-          sconv_unit_stride<56, 1>(
+          sconv_unit_stride<56, 1, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -666,7 +666,7 @@ void caffe_cpu_sconv(
       else if (kernel_h == 3) {
         if (height == 12) {
           // overfeat
-          sconv_unit_stride<12, 3>(
+          sconv_unit_stride<12, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -676,7 +676,7 @@ void caffe_cpu_sconv(
         }
         else if (height == 13) {
           // alexnet conv3-5
-          sconv_unit_stride<13, 3>(
+          sconv_unit_stride<13, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -686,7 +686,7 @@ void caffe_cpu_sconv(
         }
         // the following sizes are used by GoogLeNet
         else if (height == 7) {
-          sconv_unit_stride<7, 3>(
+          sconv_unit_stride<7, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -695,7 +695,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 14) {
-          sconv_unit_stride<14, 3>(
+          sconv_unit_stride<14, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -704,7 +704,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 28) {
-          sconv_unit_stride<28, 3>(
+          sconv_unit_stride<28, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -713,7 +713,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 56) {
-          sconv_unit_stride<56, 3>(
+          sconv_unit_stride<56, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -723,7 +723,7 @@ void caffe_cpu_sconv(
         }
         // OCR public
         else if (height == 3) {
-          sconv_unit_stride<3, 3>(
+          sconv_unit_stride<3, 3, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -735,7 +735,7 @@ void caffe_cpu_sconv(
       else if (kernel_h == 5) {
         // AlexNet conv2
         if (height == 27) {
-          sconv_unit_stride<27, 5>(
+          sconv_unit_stride<27, 5, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -745,7 +745,7 @@ void caffe_cpu_sconv(
         }
         // the following sizes are used by GoogLeNet
         else if (height == 7) {
-          sconv_unit_stride<7, 5>(
+          sconv_unit_stride<7, 5, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -754,7 +754,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 14) {
-          sconv_unit_stride<14, 5>(
+          sconv_unit_stride<14, 5, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -763,7 +763,7 @@ void caffe_cpu_sconv(
           return;
         }
         else if (height == 28) {
-          sconv_unit_stride<28, 5>(
+          sconv_unit_stride<28, 5, FUSE_RELU>(
               input_padded,
               rowptr_blocked, colidx_blocked, values_blocked, ncolblocks,
               bias,
@@ -779,6 +779,7 @@ void caffe_cpu_sconv(
   }
   else if (height == 227 && width == 227 && pad_h == 0 && pad_w == 0 && stride_h == 4 && stride_w == 4 && kernel_w == 11 && kernel_h == 11) {
     // conv1 of AlexNet
+    assert(!FUSE_RELU);
 
     int WIDTH = 227;
     int STRIDE = 4;
@@ -929,7 +930,7 @@ void caffe_cpu_sconv(
       " stride " << stride_w << "x" << stride_h <<
       " dilation " << dilation_w << "x" << dilation_h;
 
-  caffe_cpu_sconv_default(
+  caffe_cpu_sconv_default<FUSE_RELU>(
       // input features
       input_padded, in_channels,
       height, width,
@@ -943,5 +944,47 @@ void caffe_cpu_sconv(
       // output features
       output, out_channels);
 }
+
+template
+void caffe_cpu_sconv<false>(
+    // input features
+    const float *input_padded, int in_channels,
+    int height, int width,
+    int pad_h, int pad_w,
+    int stride_h, int stride_w,
+    int dilation_h, int dilation_w,
+    // weights
+    const int *rowptr, const int *colidx, const float *values,
+    int kernel_h, int kernel_w,
+    const int **rowptr_blocked, const int **colidx_blocked, const float **values_blocked,
+    int ncolblocks,
+    // bias (for the case when bias is fused with convolution)
+    const float *bias,
+    // output features
+    float *output,
+    int out_channels,
+    float *output_scratch,
+    int ninputs);
+
+template
+void caffe_cpu_sconv<true>(
+    // input features
+    const float *input_padded, int in_channels,
+    int height, int width,
+    int pad_h, int pad_w,
+    int stride_h, int stride_w,
+    int dilation_h, int dilation_w,
+    // weights
+    const int *rowptr, const int *colidx, const float *values,
+    int kernel_h, int kernel_w,
+    const int **rowptr_blocked, const int **colidx_blocked, const float **values_blocked,
+    int ncolblocks,
+    // bias (for the case when bias is fused with convolution)
+    const float *bias,
+    // output features
+    float *output,
+    int out_channels,
+    float *output_scratch,
+    int ninputs);
 
 }  // namespace caffe

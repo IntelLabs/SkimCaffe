@@ -15,23 +15,23 @@
 namespace caffe {
 
 /** sparse convolution fused with bias term */
-template <typename Dtype>
+template <bool FUSE_RELU = false>
 void caffe_cpu_sconv(
     // input features
-    const Dtype *input_padded, int in_channels,
+    const float *input_padded, int in_channels,
     int height, int width,
     int pad_h, int pad_w,
     int stride_h, int stride_w,
     int dilation_h, int dilation_w,
     // weights
-    const int *rowptr, const int *colidx, const Dtype *values,
+    const int *rowptr, const int *colidx, const float *values,
     int kernel_h, int kernel_w,
-    const int **rowptr_blocked, const int **colidx_blocked, const Dtype **values_blocked,
+    const int **rowptr_blocked, const int **colidx_blocked, const float **values_blocked,
     int ncolblocks,
     // bias (for the case when bias is fused with convolution)
-    const Dtype *bias,
+    const float *bias,
     // output features
-    Dtype *output,
+    float *output,
     int out_channels,
     float *output_scratch,
     int ninputs /* batch size*/);
