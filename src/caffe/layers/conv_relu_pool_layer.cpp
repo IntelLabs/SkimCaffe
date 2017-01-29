@@ -15,6 +15,8 @@ double get_cpu_freq();
 
 namespace caffe {
 
+extern double padding_time;
+
 template <typename Dtype>
 void ConvolutionReLUPoolLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
@@ -327,7 +329,7 @@ void ConvolutionReLUPoolLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bo
     } // omp parallel
   } // for (int i = 0; i < bottom.size(); ++i)
 
-  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " pool-time " << pool_time;
+  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time << " pool-time " << pool_time;
 
   int height = this->conv_input_shape_.cpu_data()[1];
   int width = this->conv_input_shape_.cpu_data()[2];
