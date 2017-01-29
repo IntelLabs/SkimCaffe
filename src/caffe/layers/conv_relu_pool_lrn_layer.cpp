@@ -137,7 +137,7 @@ void ConvolutionReLUPoolLRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& 
      product_layer_->SetUp(product_bottom_vec_, top);
    }
    if (this->layer_param_.relu_param().negative_slope() != 0) {
-     LOG(FATAL) << "ConvolutionReLUPoolLayer only supports negative_slope == 0";
+     LOG(FATAL) << type() << " only supports negative_slope == 0";
    }
 }
 
