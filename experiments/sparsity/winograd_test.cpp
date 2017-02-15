@@ -374,14 +374,14 @@ int main()
   }
 
   {
-    WinogradGKronG<float> *A = WinogradGKronG<float>::getInstance(3);
+    WinogradGKronG<double> *A = WinogradGKronG<double>::getInstance(3);
 
-    float weight[3*3] = {
+    double weight[3*3] = {
         0.0154869, 0.0118699, 0.00100924, -0.0625147, 0.0720939, -0.000762911, -0.00286087, -0.047404, 0.0281393,
     };
 
     int indices[] = { 3, 5, 8, 11, 14, 16, 20, 21, 28, };
-    float mask[A->M*A->M];
+    double mask[A->M*A->M];
     for (int i = 0; i < sizeof(mask)/sizeof(mask[0]); ++i) {
       mask[i] = 1;
     }
@@ -389,7 +389,7 @@ int main()
       mask[indices[i] - 1] = 0;
     }
 
-    float weight_temp[A->N*A->N];
+    double weight_temp[A->N*A->N];
 
     memcpy(weight_temp, weight, sizeof(weight));
     A->imposeSparsity(weight_temp, mask, 1);
@@ -430,38 +430,161 @@ int main()
   {
     WinogradGKronG<double> *A = WinogradGKronG<double>::getInstance(3);
 
-    double weight_cpu[3*3] = {
-        -0.23985,  0.32602, 0.481601, 0.235871, 0.291445, 0.676182, 0.579017, 0.289492, 0.398896,
+    float weight_cpu[2][3*3] = {
+        { -0.23985,  0.32602, 0.481601, 0.235871, 0.291445, 0.676182, 0.579017, 0.289492, 0.398896, },
+        { 0.0154869, 0.0118699, 0.00100924, -0.0625147, 0.0720939, -0.000762911, -0.00286087, -0.047404, 0.0281393, },
     };
-    std::vector<int> shape;
-    shape.push_back(sizeof(weight_cpu)/sizeof(weight_cpu[0]));
-    caffe::Blob<double> weight(shape);
+    int repeat = sizeof(weight_cpu)/sizeof(weight_cpu[0]);
 
-    int indices[] = { 15 };
+    std::vector<int> shape;
+    shape.push_back(repeat);
+    shape.push_back(sizeof(weight_cpu[0])/sizeof(weight_cpu[0][0]));
+    caffe::Blob<float> weight(shape);
 
     shape.clear();
-    shape.push_back(A->M*A->M);
-    caffe::Blob<double> mask(shape);
+    shape.push_back(repeat);
+    shape.push_back(A->M*A->M + A->N*A->N);
+    caffe::Blob<double> weight_temp(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    caffe::Blob<long> weight_temp_ptr(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    shape.push_back(A->M*A->M + A->N*A->N);
+    shape.push_back(A->N*A->N);
+    caffe::Blob<double> A_temp(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    caffe::Blob<long> A_temp_ptr(shape);
+
+    for (int i = 0; i < repeat; ++i) {
+      ((double **)weight_temp_ptr.mutable_cpu_data())[i] = weight_temp.mutable_gpu_data() + i*(A->M*A->M + A->N*A->N);
+      ((double **)A_temp_ptr.mutable_cpu_data())[i] = A_temp.mutable_gpu_data() + i*(A->M*A->M + A->N*A->N)*(A->N*A->N);
+
+      for (int j = 0; j < A->M*A->M; ++j) {
+        weight_temp.mutable_cpu_data()[i*(A->M*A->M + A->N*A->N) + j] = 0;
+      }
+      for (int j = A->M*A->M; j < A->M*A->M + A->N*A->N; ++j) {
+        for (int k = 0; k < A->N*A->N; ++k) {
+          A_temp.mutable_cpu_data()[(i*(A->N*A->N) + k)*(A->M*A->M + A->N*A->N) + j] = 0;
+        }
+        A_temp.mutable_cpu_data()[(i*(A->N*A->N) + j - A->M*A->M)*(A->M*A->M + A->N*A->N) + j] = 1;
+      }
+    }
+
+    int indices[2][6*6] = {
+      { 15, 0, },
+      { 3, 5, 8, 11, 14, 16, 20, 21, 28, 0, },
+    };
+
+    shape.clear();
+    shape.push_back(A->M*A->M*repeat);
+    caffe::Blob<float> mask(shape);
     for (int i = 0; i < shape[0]; ++i) {
       mask.mutable_cpu_data()[i] = 1;
     }
-    for (int i = 0; i < sizeof(indices)/sizeof(indices[0]); ++i) {
-      mask.mutable_cpu_data()[indices[i] - 1] = 0;
+    for (int i = 0; i < repeat; ++i) {
+      for (int j = 0; j < sizeof(indices[0])/sizeof(indices[0][0]); ++j) {
+        if (indices[i][j] == 0) break;
+        mask.mutable_cpu_data()[A->M*A->M*i + indices[i][j] - 1] = 0;
+      }
     }
 
-    memcpy(weight.mutable_cpu_data(), weight_cpu, sizeof(weight_cpu));
-    caffe::caffe_gpu_impose_sparsity(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 1, A->get()->gpu_data(), A->M, A->N, 1);
-    print_matrix(weight.cpu_data(), A->N, A->N);
+    for (int i = 0; i < repeat; ++i) {
+      memcpy(weight.mutable_cpu_data() + i*sizeof(weight_cpu[0])/sizeof(weight_cpu[0][0]), weight_cpu[i], sizeof(weight_cpu[0]));
+    }
 
+    caffe::caffe_gpu_impose_sparsity(
+      weight.mutable_gpu_data(), weight_temp.mutable_gpu_data(), (double **)weight_temp_ptr.mutable_gpu_data(),
+      A->get()->gpu_data(), A_temp.mutable_gpu_data(), (double **)A_temp_ptr.mutable_gpu_data(),
+      mask.mutable_gpu_data(), 1, A->M, A->N, repeat);
+
+    for (int i = 0; i < repeat; ++i) {
+      print_matrix(weight.cpu_data() + i*A->N*A->N, A->N, A->N);
+      fprintf(stderr, "\n");
+    }
+  }
+
+  {
+    WinogradGKronG<double> *A = WinogradGKronG<double>::getInstance(5);
+
+    float weight_cpu[1][5*5] = {
+      { -0.0157232, 0.207913, -0.00964544, 0.129141, -0.0579629, 0.143075, -0.035662, 0.116638, -0.0962759, 0.161726, -0.115694, -0.247545, 0.00910714, 0.412703, 0.470526, 0.182568, -0.0347781, -0.161185, 0.114429, 0.202669, 0.211487, 0.217568, -0.246375, -0.275411, 0.211334, },
+    };
+    int repeat = sizeof(weight_cpu)/sizeof(weight_cpu[0]);
+
+    std::vector<int> shape;
+    shape.push_back(repeat);
+    shape.push_back(sizeof(weight_cpu[0])/sizeof(weight_cpu[0][0]));
+    caffe::Blob<float> weight(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    shape.push_back(A->M*A->M + A->N*A->N);
+    caffe::Blob<double> weight_temp(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    caffe::Blob<long> weight_temp_ptr(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    shape.push_back(A->M*A->M + A->N*A->N);
+    shape.push_back(A->N*A->N);
+    caffe::Blob<double> A_temp(shape);
+
+    shape.clear();
+    shape.push_back(repeat);
+    caffe::Blob<long> A_temp_ptr(shape);
+
+    for (int i = 0; i < repeat; ++i) {
+      ((double **)weight_temp_ptr.mutable_cpu_data())[i] = weight_temp.mutable_gpu_data() + i*(A->M*A->M + A->N*A->N);
+      ((double **)A_temp_ptr.mutable_cpu_data())[i] = A_temp.mutable_gpu_data() + i*(A->M*A->M + A->N*A->N)*(A->N*A->N);
+
+      for (int j = 0; j < A->M*A->M; ++j) {
+        weight_temp.mutable_cpu_data()[i*(A->M*A->M + A->N*A->N) + j] = 0;
+      }
+      for (int j = A->M*A->M; j < A->M*A->M + A->N*A->N; ++j) {
+        for (int k = 0; k < A->N*A->N; ++k) {
+          A_temp.mutable_cpu_data()[(i*(A->N*A->N) + k)*(A->M*A->M + A->N*A->N) + j] = 0;
+        }
+        A_temp.mutable_cpu_data()[(i*(A->N*A->N) + j - A->M*A->M)*(A->M*A->M + A->N*A->N) + j] = 1;
+      }
+    }
+
+    int indices[1][8*8] = {
+      { 21, 31, 36, 38, 39, 43, 45, 46, 47, 52, 53, 54, },
+    };
+
+    shape.clear();
+    shape.push_back(A->M*A->M*repeat);
+    caffe::Blob<float> mask(shape);
     for (int i = 0; i < shape[0]; ++i) {
       mask.mutable_cpu_data()[i] = 1;
     }
-    for (int i = 0; i < sizeof(indices)/sizeof(indices[0]); ++i) {
-      mask.mutable_cpu_data()[indices[i] - 1] = 0;
+    for (int i = 0; i < repeat; ++i) {
+      for (int j = 0; j < sizeof(indices[0])/sizeof(indices[0][0]); ++j) {
+        if (indices[i][j] == 0) break;
+        mask.mutable_cpu_data()[A->M*A->M*i + indices[i][j] - 1] = 0;
+      }
     }
-    memcpy(weight.mutable_cpu_data(), weight_cpu, sizeof(weight_cpu));
-    caffe::caffe_gpu_impose_sparsity(weight.mutable_gpu_data(), mask.mutable_gpu_data(), 100, A->get()->gpu_data(), A->M, A->N, 1);
-    print_matrix(weight.cpu_data(), A->N, A->N);
+
+    for (int i = 0; i < repeat; ++i) {
+      memcpy(weight.mutable_cpu_data() + i*sizeof(weight_cpu[0])/sizeof(weight_cpu[0][0]), weight_cpu[i], sizeof(weight_cpu[0]));
+    }
+
+    caffe::caffe_gpu_impose_sparsity(
+      weight.mutable_gpu_data(), weight_temp.mutable_gpu_data(), (double **)weight_temp_ptr.mutable_gpu_data(),
+      A->get()->gpu_data(), A_temp.mutable_gpu_data(), (double **)A_temp_ptr.mutable_gpu_data(),
+      mask.mutable_gpu_data(), 100, A->M, A->N, repeat);
+
+    for (int i = 0; i < repeat; ++i) {
+      print_matrix(weight.cpu_data() + i*A->N*A->N, A->N, A->N);
+      fprintf(stderr, "\n");
+    }
   }
 
   return 0;
