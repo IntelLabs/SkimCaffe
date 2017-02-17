@@ -661,6 +661,7 @@ message ConvolutionParameter {
   optional ConvMode conv_mode = 21 [default = LOWERED_GEMM];
   optional bool dump_parameter = 22 [default = false];
   optional bool dump_activation = 23 [default = false];
+  optional bool parameter_sparsity_pattern_histogram = 24 [default = false];
 }
 
 message CropParameter {

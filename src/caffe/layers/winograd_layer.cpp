@@ -136,6 +136,43 @@ void WinogradLayer<Dtype>::WeightAlign() {
 
   weight_ptrs_initialized_ = false;
   weight_diff_ptrs_initialized_ = false;
+
+	const LayerParameter& layerparam = this->layer_param();
+	ConvolutionParameter conv_param = layerparam.convolution_param();
+  if (conv_param.parameter_sparsity_pattern_histogram()) {
+    map<unsigned long long, int> hist;
+
+    for (int oc = 0; oc < this->conv_out_channels_; ++oc) {
+      for (int ic = 0; ic < this->conv_in_channels_/this->group_; ++ic) {
+        unsigned long long pattern = 0;
+        for (int k = 0; k < tile_h_in_*tile_w_in_; ++k) {
+          if (this->blobs_[0]->cpu_data()[(k*this->conv_out_channels_ + oc)*this->conv_in_channels_/this->group_ + ic] != 0) {
+            pattern |= (1ULL << k);
+          }
+        }
+        if (hist.find(pattern) == hist.end()) {
+          hist[pattern] = 0;
+        }
+        ++hist[pattern];
+      }
+    }
+
+    set<pair<int, unsigned long long> > inverseHist;
+    for (map<unsigned long long, int>::iterator pattern = hist.begin(); pattern != hist.end(); ++pattern) {
+      inverseHist.insert(make_pair<int, unsigned long long>(pattern->second, pattern->first));
+    }
+
+    fprintf(stderr, "total = %d\n", this->conv_out_channels_*this->conv_in_channels_/this->group_);
+    for (set<pair<int, unsigned long long> >::reverse_iterator pattern = inverseHist.rbegin(); pattern != inverseHist.rend(); ++pattern) {
+      fprintf(stderr, "%d\n", pattern->first);
+      for (int h = 0; h < tile_h_in_; ++h) {
+        for (int w = 0; w < tile_w_in_; ++w) {
+          fprintf(stderr, "%d ", (pattern->second & (1ULL << (h*tile_w_in_ + w))) != 0);
+        }
+        fprintf(stderr, "\n");
+      }
+    }
+  }
 }
 
 template<typename Dtype>

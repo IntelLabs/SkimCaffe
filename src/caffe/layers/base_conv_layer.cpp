@@ -398,6 +398,48 @@ void BaseConvolutionLayer<float>::WeightAlign(){
 		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<float>::getPruneThreshold(), group_);
 	}
 
+  if (conv_param.parameter_sparsity_pattern_histogram() && std::string(this->type()) != "Winograd") {
+    int kernel_h = kernel_shape_.cpu_data()[0];
+    int kernel_w = kernel_shape_.cpu_data()[1];
+
+    CHECK(weight_offset == M*conv_in_channels_/group_*kernel_h*kernel_w);
+    CHECK(N == conv_in_channels_/group_*kernel_h*kernel_w);
+
+    map<unsigned long long, int> hist;
+
+    for (int g = 0; g < group_; ++g) {
+      for (int oc = 0; oc < M; ++oc) {
+        for (int ic = 0; ic < conv_in_channels_/group_; ++ic) {
+          int pattern = 0;
+          for (int k = 0; k < kernel_h*kernel_w; ++k) {
+            if (this->blobs_[0]->cpu_data()[weight_offset*g + (oc*conv_in_channels_/group_ + ic)*kernel_h*kernel_w + k] != 0) {
+              pattern |= (1 << k);
+            }
+          }
+          if (hist.find(pattern) == hist.end()) {
+            hist[pattern] = 0;
+          }
+          ++hist[pattern];
+        } // for each input channel
+      } // for each output channel
+    } // for each group
+
+    set<pair<int, unsigned long long> > inverseHist;
+    for (map<unsigned long long, int>::iterator pattern = hist.begin(); pattern != hist.end(); ++pattern) {
+      inverseHist.insert(make_pair<int, unsigned long long>(pattern->second, pattern->first));
+    }
+
+    fprintf(stderr, "total = %d\n", M*conv_in_channels_);
+    for (set<pair<int, unsigned long long> >::reverse_iterator pattern = inverseHist.rbegin(); pattern != inverseHist.rend(); ++pattern) {
+      fprintf(stderr, "%d\n", pattern->first);
+      for (int h = 0; h < kernel_h; ++h) {
+        for (int w = 0; w < kernel_w; ++w) {
+          fprintf(stderr, "%d ", (pattern->second & (1 << (h*kernel_w + w))) != 0);
+        }
+        fprintf(stderr, "\n");
+      }
+    }
+  }
 }
 
 template <typename Dtype>
