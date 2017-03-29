@@ -70,7 +70,12 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
   bool IsReshapedToWinograd();
   void ReshapeToWinograd();
 
+  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
+      const vector<Blob<Dtype>*>& top);
+
  protected:
+  void WeightAlignLocal();
+
   virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top);
   virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,

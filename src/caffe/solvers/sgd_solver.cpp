@@ -1164,7 +1164,16 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsityOld(int param_id) {
   Dtype sparsity = Dtype(0);
   Blob<Dtype> *param = net_params[param_id];
 
-  if (param->num_axes() == 4 && param->shape(2) == param->shape(3) && (param->shape(2) == 3 || param->shape(2) == 5)) {
+  const vector<string>& net_params_local_regular_types = this->net_->params_regularization_type();
+  string regularization_type = this->param_.regularization_type();
+  string local_regularization_type = net_params_local_regular_types[param_id];
+  if(!local_regularization_type.empty()){
+    regularization_type = local_regularization_type;
+  }
+
+  if (param->num_axes() == 4 && param->shape(2) == param->shape(3) &&
+      (param->shape(2) == 3 || param->shape(2) == 5) &&
+      (regularization_type == "L1_Winograd" || regularization_type == "L2_Winograd")) {
     int N = param->shape()[0];
     int C = param->shape()[1];
     int K = param->shape()[2];
@@ -1238,7 +1247,16 @@ Dtype SGDSolver<Dtype>::GetWinogradSparsity(int param_id) {
   Dtype sparsity = Dtype(0);
   Blob<Dtype> *param = net_params[param_id];
 
-  if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+  const vector<string>& net_params_local_regular_types = this->net_->params_regularization_type();
+  string regularization_type = this->param_.regularization_type();
+  string local_regularization_type = net_params_local_regular_types[param_id];
+  if(!local_regularization_type.empty()){
+    regularization_type = local_regularization_type;
+  }
+
+  if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] &&
+      (param->shape()[2] == 3 || param->shape()[2] == 5) &&
+      (regularization_type == "L1_Winograd" || regularization_type == "L2_Winograd")) {
     int N = param->shape()[0];
     int C = param->shape()[1];
     int K = param->shape()[2];
@@ -1405,11 +1423,23 @@ template <typename Dtype>
 void SGDSolver<Dtype>::PrintWinogradFiberSliceSparsity() {
   const vector<Blob<Dtype>*>& net_params = this->net_->learnable_params();
 
+  const vector<string>& net_params_local_regular_types = this->net_->params_regularization_type();
+  string regularization_type = this->param_.regularization_type();
+
   ostringstream sparsity_msg_stream;
   sparsity_msg_stream << "     Winograd fiber/slice sparsity %: \n";
   for (int param_id = 0; param_id < this->net_->learnable_params().size(); ++param_id) {
-    Blob<Dtype> *param = this->net_->learnable_params()[param_id]; 
-    if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] && (param->shape()[2] == 3 || param->shape()[2] == 5)) {
+    Blob<Dtype> *param = this->net_->learnable_params()[param_id];
+
+    string local_regularization_type = net_params_local_regular_types[param_id];
+    if(!local_regularization_type.empty()){
+      regularization_type = local_regularization_type;
+    }
+
+    if (param->num_axes() == 4 && param->shape()[2] == param->shape()[3] &&
+        (param->shape()[2] == 3 || param->shape()[2] == 5) &&
+        (regularization_type == "L1_Winograd" || regularization_type == "L2_Winograd")) {
+
       int N = param->shape()[0];
       int C = param->shape()[1];
       int K = param->shape()[2];

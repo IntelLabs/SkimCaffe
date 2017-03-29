@@ -29,6 +29,48 @@ bool WinogradLayer<Dtype>::IsReshapedToWinograd() {
 
 template <typename Dtype>
 void WinogradLayer<Dtype>::ReshapeToWinograd() {
+  if (!IsReshapedToWinograd()) {
+    // not yet reshaped
+    vector<int> shape;
+    shape.push_back(tile_h_in_);
+    shape.push_back(tile_w_in_);
+    shape.push_back(this->conv_out_channels_);
+    shape.push_back(this->conv_in_channels_/this->group_);
+    this->blobs_[0]->Reshape(shape);
+  }
+}
+
+template <typename Dtype>
+void WinogradLayer<Dtype>::WeightAlign() {
+  BaseConvolutionLayer<Dtype>::WeightAlign();
+
+  WeightAlignLocal();
+}
+
+template <typename Dtype>
+void WinogradLayer<Dtype>::WeightAlignLocal() {
+  if (!IsReshapedToWinograd()) {
+    // transform weights to Winograd domain
+    Dtype* weight_orig = new Dtype[this->blobs_[0]->count()];
+    memcpy(weight_orig, this->blobs_[0]->cpu_data(), sizeof(Dtype)*this->blobs_[0]->count());
+
+    ReshapeToWinograd();
+
+    int kernel_h = this->kernel_shape_.cpu_data()[0], kernel_w = this->kernel_shape_.cpu_data()[1];
+    WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
+    caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans,
+        tile_h_in_*tile_w_in_, (this->conv_in_channels_/this->group_)*this->conv_out_channels_, kernel_h*kernel_w,
+        (Dtype)1, GKronG->get()->cpu_data(), weight_orig,
+        (Dtype)0, this->blobs_[0]->mutable_cpu_data());
+    delete[] weight_orig;
+  }
+}
+
+template <typename Dtype>
+void WinogradLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
+      const vector<Blob<Dtype>*>& top) {
+  BaseConvolutionLayer<Dtype>::Reshape(bottom, top);
+
   int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
   int kernel_h = this->kernel_shape_.cpu_data()[0], kernel_w = this->kernel_shape_.cpu_data()[1];
   int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
@@ -55,51 +97,6 @@ void WinogradLayer<Dtype>::ReshapeToWinograd() {
   ntiles_h_ = (std::max(height + pad_h - tile_h_in_ + 1, output_h) + tile_h_out_ - 1)/tile_h_out_;
   ntiles_w_ = (std::max(width + pad_w - tile_w_in_ + 1, output_w) + tile_w_out_ - 1)/tile_w_out_;
 
-  if (!IsReshapedToWinograd()) {
-    // not yet reshaped
-    vector<int> shape;
-    shape.push_back(tile_h_in_);
-    shape.push_back(tile_w_in_);
-    shape.push_back(this->conv_out_channels_);
-    shape.push_back(this->conv_in_channels_/this->group_);
-    this->blobs_[0]->Reshape(shape);
-  }
-}
-
-template <typename Dtype>
-void WinogradLayer<Dtype>::WeightAlign() {
-  BaseConvolutionLayer<Dtype>::WeightAlign();
-
-  int height = this->conv_input_shape_.cpu_data()[1], width = this->conv_input_shape_.cpu_data()[2];
-  int kernel_h = this->kernel_shape_.cpu_data()[0], kernel_w = this->kernel_shape_.cpu_data()[1];
-  int stride_h = this->stride_.cpu_data()[0], stride_w = this->stride_.cpu_data()[1];
-  int dilation_h = this->dilation_.cpu_data()[0], dilation_w = this->dilation_.cpu_data()[1];
-
-  if (stride_h != 1 || stride_w != 1 || dilation_h != 1 || dilation_w != 1) {
-    LOG(FATAL) << "non-unit stride or dilation";
-  }
-  if (kernel_h != kernel_w) {
-    LOG(FATAL) << "kernel_h != kernel_w";
-  }
-
-  if (!IsReshapedToWinograd()) {
-    // transform weights to Winograd domain
-    Dtype* weight_orig = new Dtype[this->blobs_[0]->count()];
-    memcpy(weight_orig, this->blobs_[0]->cpu_data(), sizeof(Dtype)*this->blobs_[0]->count());
-
-    ReshapeToWinograd();
-
-    WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
-    caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasTrans,
-        tile_h_in_*tile_w_in_, (this->conv_in_channels_/this->group_)*this->conv_out_channels_, kernel_h*kernel_w,
-        (Dtype)1, GKronG->get()->cpu_data(), weight_orig,
-        (Dtype)0, this->blobs_[0]->mutable_cpu_data());
-    delete[] weight_orig;
-  }
-  else {
-    ReshapeToWinograd();
-  }
-
   // create temporary buffers
   vector<int> shape;
   shape.push_back(this->num_);
@@ -107,72 +104,39 @@ void WinogradLayer<Dtype>::WeightAlign() {
   shape.push_back(std::max(this->conv_in_channels_, this->conv_out_channels_));
   shape.push_back(ntiles_h_*ntiles_w_);
 
-  temp1_.Reshape(shape);
-  temp2_.Reshape(shape);
+  if (temp1_.shape() != shape) {
+    temp1_.Reshape(shape);
+    temp2_.Reshape(shape);
 
-  // create arrays to pointers to prepare for cuda batch sgemm
-  shape.clear();
-  shape.push_back(tile_h_in_);
-  shape.push_back(tile_w_in_);
-  shape.push_back(this->group_);
+    // create arrays to pointers to prepare for cuda batch sgemm
+    shape.clear();
+    shape.push_back(tile_h_in_);
+    shape.push_back(tile_w_in_);
+    shape.push_back(this->group_);
 
-  in_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
-  out_activation_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
-  weight_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
-  weight_diff_ptrs_ = shared_ptr<Blob<long> >(new Blob<long>(shape));
+    in_activation_ptrs_.reset(new Blob<long>(shape));
+    out_activation_ptrs_.reset(new Blob<long>(shape));
+    weight_ptrs_.reset(new Blob<long>(shape));
+    weight_diff_ptrs_.reset(new Blob<long>(shape));
 
-  Dtype **in_ptrs = (Dtype **)in_activation_ptrs_->mutable_cpu_data();
-  Dtype **out_ptrs = (Dtype **)out_activation_ptrs_->mutable_cpu_data();
+    Dtype **in_ptrs = (Dtype **)in_activation_ptrs_->mutable_cpu_data();
+    Dtype **out_ptrs = (Dtype **)out_activation_ptrs_->mutable_cpu_data();
 
-  for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
-    in_ptrs[j] =
-      temp1_.mutable_gpu_data() +
-      j*(this->conv_in_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
+    for (int j = 0; j < tile_h_in_*tile_w_in_*this->group_; ++j) {
+      in_ptrs[j] =
+        temp1_.mutable_gpu_data() +
+        j*(this->conv_in_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
 
-    out_ptrs[j] =
-      temp2_.mutable_gpu_data() +
-      j*(this->conv_out_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
+      out_ptrs[j] =
+        temp2_.mutable_gpu_data() +
+        j*(this->conv_out_channels_/this->group_)*this->num_*ntiles_h_*ntiles_w_;
+    }
+
+    weight_ptrs_initialized_ = false;
+    weight_diff_ptrs_initialized_ = false;
   }
 
-  weight_ptrs_initialized_ = false;
-  weight_diff_ptrs_initialized_ = false;
-
-	const LayerParameter& layerparam = this->layer_param();
-	ConvolutionParameter conv_param = layerparam.convolution_param();
-  if (conv_param.parameter_sparsity_pattern_histogram()) {
-    map<unsigned long long, int> hist;
-
-    for (int oc = 0; oc < this->conv_out_channels_; ++oc) {
-      for (int ic = 0; ic < this->conv_in_channels_/this->group_; ++ic) {
-        unsigned long long pattern = 0;
-        for (int k = 0; k < tile_h_in_*tile_w_in_; ++k) {
-          if (this->blobs_[0]->cpu_data()[(k*this->conv_out_channels_ + oc)*this->conv_in_channels_/this->group_ + ic] != 0) {
-            pattern |= (1ULL << k);
-          }
-        }
-        if (hist.find(pattern) == hist.end()) {
-          hist[pattern] = 0;
-        }
-        ++hist[pattern];
-      }
-    }
-
-    set<pair<int, unsigned long long> > inverseHist;
-    for (map<unsigned long long, int>::iterator pattern = hist.begin(); pattern != hist.end(); ++pattern) {
-      inverseHist.insert(make_pair<int, unsigned long long>(pattern->second, pattern->first));
-    }
-
-    fprintf(stderr, "total = %d\n", this->conv_out_channels_*this->conv_in_channels_/this->group_);
-    for (set<pair<int, unsigned long long> >::reverse_iterator pattern = inverseHist.rbegin(); pattern != inverseHist.rend(); ++pattern) {
-      fprintf(stderr, "%d\n", pattern->first);
-      for (int h = 0; h < tile_h_in_; ++h) {
-        for (int w = 0; w < tile_w_in_; ++w) {
-          fprintf(stderr, "%d ", (pattern->second & (1ULL << (h*tile_w_in_ + w))) != 0);
-        }
-        fprintf(stderr, "\n");
-      }
-    }
-  }
+  WeightAlignLocal();
 }
 
 template<typename Dtype>

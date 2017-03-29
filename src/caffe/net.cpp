@@ -800,12 +800,23 @@ void Net<Dtype>::ShareTrainedLayersWith(const Net* other) {
         << "Incompatible number of blobs for layer " << source_layer_name;
     for (int j = 0; j < target_blobs.size(); ++j) {
       Blob<Dtype>* source_blob = source_layer->blobs()[j].get();
-      bool needToReshapeWinograd = target_blobs[j]->shape() != source_blob->shape() && std::string(source_layer->type()) == "Winograd";
-      if (needToReshapeWinograd) {
-        LOG(INFO) << source_blob->shape_string() << " " << target_blobs[j]->shape_string();
-        WinogradLayer<Dtype> *winograd_layer =
-            (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
-        winograd_layer->ReshapeToWinograd();
+      bool needToReshapeWinograd = false;
+
+      if (target_blobs[j]->shape() != source_blob->shape()) {
+        if (std::string(source_layer->type()) == "Winograd") {
+          // source layer is already reshaped to Winograd match target layer
+          LOG(INFO) << source_blob->shape_string() << " " << target_blobs[j]->shape_string();
+          WinogradLayer<Dtype> *winograd_layer =
+              (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
+          winograd_layer->ReshapeToWinograd();
+          needToReshapeWinograd = true;
+        }
+        else if (std::string(source_layer->type()) == "Convolution" &&
+            std::string(layers_[target_layer_id]->type()) == "Winograd") {
+          // target Winograd layer reshaped too early
+          target_blobs[j]->Reshape(source_layer->blobs()[j]->shape());
+          needToReshapeWinograd = true;
+        }
       }
 
       CHECK(target_blobs[j]->shape() == source_blob->shape())
@@ -879,10 +890,18 @@ void Net<Dtype>::CopyTrainedLayersFrom(const NetParameter& param) {
     CHECK_EQ(target_blobs.size(), source_layer.blobs_size())
         << "Incompatible number of blobs for layer " << source_layer_name;
     for (int j = 0; j < target_blobs.size(); ++j) {
-      if (!target_blobs[j]->ShapeEquals(source_layer.blobs(j)) && std::string(source_layer.type()) == "Winograd") {
-        WinogradLayer<Dtype> *winograd_layer =
-            (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
-        winograd_layer->ReshapeToWinograd();
+      if (!target_blobs[j]->ShapeEquals(source_layer.blobs(j))) {
+        if (std::string(source_layer.type()) == "Winograd") {
+          // source layer is already reshaped to Winograd match target layer
+          WinogradLayer<Dtype> *winograd_layer =
+              (WinogradLayer<Dtype> *)(layers_[target_layer_id].get());
+          winograd_layer->ReshapeToWinograd();
+        }
+        else if (std::string(source_layer.type()) == "Convolution" &&
+            std::string(layers_[target_layer_id]->type()) == "Winograd") {
+          // target Winograd layer reshaped too early
+          target_blobs[j]->Reshape(source_layer.blobs(j).shape());
+        }
       }
 
       if (!target_blobs[j]->ShapeEquals(source_layer.blobs(j))) {
