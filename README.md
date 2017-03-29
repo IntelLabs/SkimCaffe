@@ -9,6 +9,11 @@ that it can be also used by other frameworks like TensorFlow).
 SkimCaffe also has experimental features of getting sparsity in Winograd
 (L1_Winograd regularization) and we have prelimiary results for AlexNet.
 Please let us know if you're interested in this experimental feature.
+More details are described in the following papers:
+
+- https://arxiv.org/abs/1608.01409 (Holistic Sparse CNN: Forging the Trident of Accuracy, Speed, and Size, Jongsoo Park, Sheng Li, Wei Wen, Hai Li, Yiran Chen, and Pradeep Dubey)
+- https://openreview.net/forum?id=rJPcZ3txx (updated version of the above paper accepted to ICLR'17, Faster CNNs with Direct Sparse Convolutions and Guided Pruning, Jongsoo Park, Sheng Li, Wei Wen, Ping Tak Peter Tang, Hai Li, Yiran Chen, and Pradeep Dubey)
+- https://arxiv.org/abs/1702.08597 (Enabling Sparse Winograd Convolution by Native Pruning, Sheng Li, Jongsoo Park, and Ping Tak Peter Tang)
 
 SkimCaffe has been only tested with bvlc_reference_caffenet bvlc_googlenet, and
 there could be places where things do not work if you use other networks.
@@ -19,40 +24,49 @@ Eventually, our sparse CNN implementation should be general enough to handle
 all kinds of networks.
 
 We assume you have a recent Intel compiler and MKL installed.
-Tested environments: (Intel compiler version 15.0.3.187 and boost 1.59.0)
-We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
-Direct sparse convolution and sparse fully-connected layers is only tested for AlexNet.
-More details are described in the following papers:
+Tested environments: Intel compiler version 15.0.3.187 or newer. boost 1.59.0 . MKL 2017 or newer to use MKL-DNN.
+Direct sparse convolution and sparse fully-connected layers is only tested for AlexNet and GoogLeNet.
 
-- https://arxiv.org/abs/1608.01409 (Holistic Sparse CNN: Forging the Trident of Accuracy, Speed, and Size, Jongsoo Park, Sheng Li, Wei Wen, Hai Li, Yiran Chen, and Pradeep Dubey)
-- https://openreview.net/forum?id=rJPcZ3txx (updated version of the above paper accepted to ICLR'17, Faster CNNs with Direct Sparse Convolutions and Guided Pruning, Jongsoo Park, Sheng Li, Wei Wen, Ping Tak Peter Tang, Hai Li, Yiran Chen, and Pradeep Dubey)
-- https://arxiv.org/abs/1702.08597 (Enabling Sparse Winograd Convolution by Native Pruning, Sheng Li, Jongsoo Park, and Ping Tak Peter Tang)
+Build instruction:
 
 1) Set up Intel compiler environment (compilervars.sh or compilervars.csh)
 
-2) Compile libxsmm:
+```
+/opt/intel/compilers_and_libraries/linux/bin/compilervars.sh intel64 # assuming Intel compiler is installed under /opt/intel and you're using BASH
+```
+
+2) Create Makefile.config based on Makefile.config.example
+
+```
+cp Makefile.config.example Makefile.config
+# Then, change Makefile.config if needed. For example, you need to add boost include path to INCLUDE_DIRS and boost library path to LIBRARY_DIRS
+```
+
+3) Compile libxsmm:
 
 ```
 make libxsmm
 ```
 
-2) Build Caffe as usual
+4) Build Caffe as usual
 
 Additional options:
 KNL=1 # compiles for Knights Landing
 SSE=1 # compiles for SSE
 If neither KNL nor SSE is defined, by default we compile for AVX2 (Haswell or later)
 
-3) Test:
+5) Test:
 
 ```
 # Test sparse CaffeNet
 bzip2 -d models/bvlc_reference_caffenet/logs/acc_57.5_0.001_5e-5_ft_0.001_5e-5/0.001_5e-05_0_1_0_0_0_0_Sun_Jan__8_07-35-54_PST_2017/caffenet_train_iter_640000.caffemodel.bz2
-env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv_mkl.prototxt -weights models/bvlc_reference_caffenet/logs/acc_57.5_0.001_5e-5_ft_0.001_5e-5/0.001_5e-05_0_1_0_0_0_0_Sun_Jan__8_07-35-54_PST_2017/caffenet_train_iter_640000.caffemodel # assume you have 16 cores. Adjust OMP_NUM_THREADS variable accordingly for your number of cores
+export OMP_NUM_THREADS=16 # assume you have 16 cores. Adjust OMP_NUM_THREADS variable accordingly for your number of cores
+export KMP_AFFINITY=granularity=fine,compact,1
+build/tools/caffe.bin test -model models/bvlc_reference_caffenet/test_direct_sconv_mkl.prototxt -weights models/bvlc_reference_caffenet/logs/acc_57.5_0.001_5e-5_ft_0.001_5e-5/0.001_5e-05_0_1_0_0_0_0_Sun_Jan__8_07-35-54_PST_2017/caffenet_train_iter_640000.caffemodel
 
 # Test sparse GoogLeNet
 bzip2 -d models/bvlc_googlenet/gesl_0.686639_0.001_0.00005_ft_0.001_0.0001.caffemodel.bz2
-env OMP_NUM_THREADS=16 KMP_AFFINITY=granularity=fine,compact,1 build/tools/caffe.bin test -model models/bvlc_googlenet/test_direct_sconv.prototxt -weights models/bvlc_googlenet/gesl_0.686639_0.001_0.00005_ft_0.001_0.0001.caffemodel
+build/tools/caffe.bin test -model models/bvlc_googlenet/test_direct_sconv.prototxt -weights models/bvlc_googlenet/gesl_0.686639_0.001_0.00005_ft_0.001_0.0001.caffemodel
 ```
 
 Example output from Intel(R) Xeon(R) CPU E5-2699 v4 @ 2.20GHz
