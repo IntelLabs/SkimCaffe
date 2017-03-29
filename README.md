@@ -15,6 +15,46 @@ More details are described in the following papers:
 - https://openreview.net/forum?id=rJPcZ3txx (updated version of the above paper accepted to ICLR'17, Faster CNNs with Direct Sparse Convolutions and Guided Pruning, Jongsoo Park, Sheng Li, Wei Wen, Ping Tak Peter Tang, Hai Li, Yiran Chen, and Pradeep Dubey)
 - https://arxiv.org/abs/1702.08597 (Enabling Sparse Winograd Convolution by Native Pruning, Sheng Li, Jongsoo Park, and Ping Tak Peter Tang)
 
+Sparsity of pruned models:
+```
+CaffeNet (a small variation of AlexNet):
+models/bvlc_reference_caffenet/logs/acc_57.5_0.001_5e-5_ft_0.001_5e-5/0.001_5e-05_0_1_0_0_0_0_Sun_Jan__8_07-35-54_PST_2017/caffenet_train_iter_640000.caffemodel.bz2
+conv2: sparsity 85.6455%
+conv3: 93.1
+conv4: 91.808
+conv5: 88.4903
+fc6: 90.2809
+fc7: 84.3741
+fc8: 73.8236
+
+GoogLeNet
+models/bvlc_googlenet/gesl_0.686639_0.001_0.00005_ft_0.001_0.0001.caffemodel.bz2
+inception_3a/5x5    84.5625
+inception_3b/5x5    88.5482
+inception_4a/5x5    83.7604
+inception_4b/5x5    87.3958
+inception_4c/5x5    88.0052
+inception_4d/5x5    90.3867
+inception_4e/5x5    94.416
+inception_5a/5x5    93.3984
+inception_5b/5x5    94.8717
+conv2/3x3           81.6533
+inception_3a/3x3    90.0861
+inception_3b/3x3    90.4699
+inception_4a/3x3    87.968
+inception_4b/3x3    96.1057
+inception_4c/3x3    94.8968
+inception_4d/3x3    92.4134
+inception_4e/3x3    98.6999
+inception_5a/3x3    96.2437
+inception_5b/3x3    94.9538
+loss1/fc            97.9414
+loss1/classifier    93.5289
+loss2/fc            98.1798
+loss2/classifier    94.1971
+loss3/classifier    90.6519
+```
+
 SkimCaffe has been only tested with bvlc_reference_caffenet bvlc_googlenet, and
 there could be places where things do not work if you use other networks.
 Please let us know if you encounter such issues and share .prototxt of the
