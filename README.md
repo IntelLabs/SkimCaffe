@@ -19,6 +19,7 @@ Sparsity of pruned models:
 ```
 CaffeNet (a small variation of AlexNet):
 models/bvlc_reference_caffenet/logs/acc_57.5_0.001_5e-5_ft_0.001_5e-5/0.001_5e-05_0_1_0_0_0_0_Sun_Jan__8_07-35-54_PST_2017/caffenet_train_iter_640000.caffemodel.bz2
+top-1 accuracy: 0.57478
 conv2: sparsity 85.6455%
 conv3: 93.1
 conv4: 91.808
@@ -29,6 +30,8 @@ fc8: 73.8236
 
 GoogLeNet
 models/bvlc_googlenet/gesl_0.686639_0.001_0.00005_ft_0.001_0.0001.caffemodel.bz2
+top-1 accuracy: 0.686639
+top-5 accuracy: 0.886302
 inception_3a/5x5    84.5625
 inception_3b/5x5    88.5482
 inception_4a/5x5    83.7604
