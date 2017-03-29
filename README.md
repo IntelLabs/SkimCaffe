@@ -22,7 +22,11 @@ We assume you have a recent Intel compiler and MKL installed.
 Tested environments: (Intel compiler version 15.0.3.187 and boost 1.59.0)
 We also assume you have a recent x86 CPU with AVX2 or AVX512 support.
 Direct sparse convolution and sparse fully-connected layers is only tested for AlexNet.
-More details on direct sparse convolution is described at: https://arxiv.org/abs/1608.01409
+More details are described in the following papers:
+
+- https://arxiv.org/abs/1608.01409 (Holistic Sparse CNN: Forging the Trident of Accuracy, Speed, and Size, Jongsoo Park, Sheng Li, Wei Wen, Hai Li, Yiran Chen, and Pradeep Dubey)
+- https://openreview.net/forum?id=rJPcZ3txx (updated version of the above paper accepted to ICLR'17, Faster CNNs with Direct Sparse Convolutions and Guided Pruning, Jongsoo Park, Sheng Li, Wei Wen, Ping Tak Peter Tang, Hai Li, Yiran Chen, and Pradeep Dubey)
+- https://arxiv.org/abs/1702.08597 (Enabling Sparse Winograd Convolution by Native Pruning, Sheng Li, Jongsoo Park, and Ping Tak Peter Tang)
 
 1) Set up Intel compiler environment (compilervars.sh or compilervars.csh)
 
