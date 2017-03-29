@@ -70,6 +70,12 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
     LOG(FATAL) << type() << " only supports negative_slope == 0";
   }
 
+  // JSP: by some reason, if nested omp parallelism is used for MKL, I get a wrong results.
+  // Disable nested omp parallelization for now. We don't need nested parallelism as long as
+  // batch size is big enough. Still, need more investigation.
+  int mkl_max_threads_saved = mkl_get_max_threads();
+  mkl_set_num_threads(1);
+
   for (int i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
     Dtype* top_data = top[i]->mutable_cpu_data();
@@ -105,14 +111,21 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
               bottom_data + n * this->bottom_dim_, weight, top_current, n);
 
         if (0 == tid) t2 += omp_get_wtime();
-        if (this->bias_term_ &&
-            this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
-          // JSP: common path of AlexNet
-          this->forward_cpu_bias(top_current, bias);
+        if (this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
+          if (this->bias_term_) {
+            // JSP: common path of AlexNet
+            this->forward_cpu_bias(top_current, bias);
+          }
+          // bias is not fused when conv mode is not DIRECT_SCONV
+          for (int i = 0; i < this->top_dim_; ++i) {
+            top_current[i] = std::max(top_current[i], Dtype(0));
+          }
         }
-      }
+      } // for each input in the batch
     }
   }
+
+  mkl_set_num_threads(mkl_max_threads_saved);
 
   LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time;
 
