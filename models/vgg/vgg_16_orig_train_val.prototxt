@@ -13,7 +13,7 @@ layers {
     mirror: true
  }
  data_param {
-    source: "data/ilsvrc12/ilsvrc12_train_lmdb"
+    source: "examples/imagenet/ilsvrc12_train_lmdb"
     batch_size: 64
     backend: LMDB
   }
@@ -34,7 +34,7 @@ layers {
     mirror: false
  }
  data_param {
-    source: "data/ilsvrc12/ilsvrc12_val_lmdb"
+    source: "examples/imagenet/ilsvrc12_val_lmdb"
     batch_size: 50
     backend: LMDB
   }
