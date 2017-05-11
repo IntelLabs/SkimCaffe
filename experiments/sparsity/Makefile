@@ -33,14 +33,22 @@ ifeq (yes, $(DBG))
   ifeq (yes, $(KNL))
     CXXFLAGS += -xMIC-AVX512
   else
-    CXXFLAGS += -xHost
+    ifeq (yes, $(SKX))
+      CXXFLAGS += -xCORE-AVX512
+    else
+      CXXFLAGS += -xHost
+    endif
   endif
 else
   CXXFLAGS += -O3 -DNDEBUG -DMKL_DIRECT_CALL
   ifeq (yes, $(KNL))
     CXXFLAGS += -xMIC-AVX512
   else
-    CXXFLAGS += -xHost
+    ifeq (yes, $(SKX))
+      CXXFLAGS += -xCORE-AVX512
+    else
+      CXXFLAGS += -xHost
+    endif
   endif
 endif
 

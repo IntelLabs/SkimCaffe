@@ -14,7 +14,6 @@
 #include <cmath>
 
 #include "../../include/caffe/util/sconv.hpp"
-#include "../../include/caffe/util/spgemm.hpp"
 #include "SpMP/CSR.hpp"
 #include <mkl.h>
 
@@ -64,8 +63,8 @@ int main(int argc, const char *argv[])
 
   int nthreads = omp_get_max_threads();
   int nthread_groups = nthreads;
-#ifdef __AVX512F__
-  nthread_groups = NTILES;
+#ifdef __AVX512ER__ // KNL
+  //nthread_groups = NTILES;
 #else
 //  nthread_groups = nthreads/2;
 #endif
@@ -344,8 +343,8 @@ int main(int argc, const char *argv[])
       }
 
       int nthread_groups = nthreads;
-#ifdef __AVX512F__
-      nthread_groups = NTILES;
+#ifdef __AVX512ER__ // KNL
+      //nthread_groups = NTILES;
 #endif
       assert(nthreads%nthread_groups == 0);
       int nthreads_per_group = nthreads/nthread_groups;
@@ -363,6 +362,16 @@ int main(int argc, const char *argv[])
       int i_begin = std::min(i_per_group*gid, NBATCH);
       int i_end = std::min(i_begin + i_per_group, NBATCH);
 #endif
+
+      int tid_in_group = tid%nthreads_per_group;
+
+      int num_oc_blocks = (NOUT + OC_BLOCK - 1)/OC_BLOCK;
+      int oc_blocks_per_thread = (num_oc_blocks + nthreads_per_group - 1)/nthreads_per_group;
+      int oc_block_begin = std::min(oc_blocks_per_thread*tid_in_group, num_oc_blocks);
+      int oc_block_end = std::min(oc_block_begin + oc_blocks_per_thread, num_oc_blocks);
+
+      int oc_begin = std::min(oc_block_begin*OC_BLOCK, NOUT);
+      int oc_end = std::min(oc_block_end*OC_BLOCK, NOUT);
 
       unsigned long long tt = __rdtsc();
 
@@ -386,14 +395,14 @@ int main(int argc, const char *argv[])
 //            bias,
 //            output + i*NOUT*WOUT*WOUT, NOUT,
 //            input_scratch, output_colmajor_scratch, col_major_ic_block);
-        sconv_unit_stride<WIDTH, K, PAD>(
+        sconv_unit_stride<WIDTH, K, false/*fuse-relu*/>(
               input + i*NIN*(WIDTH + PAD)*(WIDTH + PAD),
               //A->rowptr, A->colidx, values,
               rowptr_blocked_temp, colidx_blocked_temp, values_blocked_temp,
               ncolblocks,
               bias,
-              output + i*NOUT*WOUT*WOUT, NOUT,
-              scratch + tid*OC_BLOCK*WOUT*((WOUT + 16 - 1)/16*16));
+              output + i*NOUT*WOUT*WOUT, oc_begin, oc_end,
+              scratch + tid*OC_BLOCK*WOUT*((WOUT + 16 - 1)/16*16), NIN, NOUT);
           //sconv345_split(
               //input + (/*j*NBATCH*/ + i)*NIN*(WIDTH + PAD)*16,
               //rowptr_split[0], colidx_split[0], values_split[0],
@@ -455,12 +464,13 @@ int main(int argc, const char *argv[])
           float actual = output[((i*NOUT + j)*WOUT + k)*WOUT + l];
           if (fabs(expected - actual)/fabs(expected) > 1e-1) {
             printf("(%d, %d, %d, %d) expected %g actual %g\n", i, j, k, l, expected, actual);
-            return -1;
+            goto exit;
           }
         }
       }
     }
   }
+  exit:
 
   unsigned long long max_cycles = 0, max_cycles2 = 0;
   unsigned long long sum_cycles = 0;
