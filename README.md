@@ -1,7 +1,8 @@
 ## SkimCaffe Specific Description
 
 A Caffe branch for training sparse CNN that provides 80-95% sparsity in
-convolution and fully-connected layers (tested with AlexNet and GoogLeNet).
+convolution and fully-connected layers (tested with AlexNet, GoogLeNet-v1, and
+Resnet-50).
 Our optimized sparse convolution and sparse-matrix-times-dense-matrix routines
 effectively take advantage of the sparsity achieving ~3x speedups with 90%
 sparsity (our sparse convolution routine will be migrated to libxsmm library so
@@ -56,10 +57,34 @@ loss1/classifier    93.5289
 loss2/fc            98.1798
 loss2/classifier    94.1971
 loss3/classifier    90.6519
+
+Resnet-50
+models/resnet/caffenet_train_iter_2000000.solverstate.bz2
+top-1 accuracy: 0.72838
+top-5 accuracy: 0.913282
+
+res2a_branch2b      88.0046
+res2b_branch2b      83.9708
+res2c_branch2b      80.7943
+res3a_branch2b      91.7562
+res3b_branch2b      91.9101
+res3c_branch2b      95.5024
+res3d_branch2b      91.1343
+res4a_branch2b      96.5534
+res4b_branch2b      97.4677
+res4c_branch2b      97.1471
+res4d_branch2b      96.7648
+res4e_branch2b      96.8435
+res4f_branch2b      96.8374
+res5a_branch2b      97.7809
+res5b_branch2b      98.0271
+res5c_branch2b      97.9203
+fc1000              91.5099
 ```
 
-SkimCaffe has been only tested with bvlc_reference_caffenet bvlc_googlenet, and
-there could be places where things do not work if you use other networks.
+SkimCaffe has been only tested with bvlc_reference_caffenet, bvlc_googlenet,
+and resnet, and there could be places where things do not work if you use other
+networks.
 Please let us know if you encounter such issues and share .prototxt of the
 network you are using.
 We will try our best to support it as well.
