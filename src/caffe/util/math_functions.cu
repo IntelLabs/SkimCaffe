@@ -155,6 +155,11 @@ void caffe_gpu_axpy<double>(const int N, const double alpha, const double* X,
   CUBLAS_CHECK(cublasDaxpy(Caffe::cublas_handle(), N, &alpha, X, 1, Y, 1));
 }
 
+template <>
+void caffe_gpu_axpy<unsigned long>(const int N, const unsigned long alpha, const unsigned long* X,
+    unsigned long* Y) {
+	NOT_IMPLEMENTED;
+}
 
 
 
@@ -220,6 +225,7 @@ void caffe_gpu_zerout(int count, Dtype *x, const Dtype *thresholds, int threshol
 template void caffe_gpu_zerout<int>(void * mutable_gpu_data, const int count, int th);
 template void caffe_gpu_zerout<unsigned int>(void * mutable_gpu_data, const int count, unsigned int th);
 template void caffe_gpu_zerout<long>(void * mutable_gpu_data, const int count, long th);
+template void caffe_gpu_zerout<unsigned long>(void * mutable_gpu_data, const int count, unsigned long th);
 template void caffe_gpu_zerout<float>(void * mutable_gpu_data, const int count, float th);
 template void caffe_gpu_zerout<double>(void * mutable_gpu_data, const int count, double th);
 
@@ -366,6 +372,7 @@ void caffe_gpu_if_nonzerout(const int n, const Dtype * x, Dtype *y, Dtype th){
 template void caffe_gpu_if_nonzerout<int>(const int n, const int * x, int *y, int th);
 template void caffe_gpu_if_nonzerout<unsigned int>(const int n, const unsigned int* x, unsigned int *y, unsigned int th);
 template void caffe_gpu_if_nonzerout<long>(const int n, const long* x, long*y, long th);
+template void caffe_gpu_if_nonzerout<unsigned long>(const int n, const unsigned long* x, unsigned long*y, unsigned long th);
 
 template void caffe_gpu_if_nonzerout<float>(const int n, const float * x, float *y, float th);
 template void caffe_gpu_if_nonzerout<double>(const int n, const double* x, double *y, double th);
@@ -402,6 +409,11 @@ void caffe_gpu_scal<double>(const int N, const double alpha, double *X) {
 }
 
 template <>
+void caffe_gpu_scal<unsigned long>(const int N, const unsigned long alpha, unsigned long *X) {
+	NOT_IMPLEMENTED;
+}
+
+template <>
 void caffe_gpu_axpby<float>(const int N, const float alpha, const float* X,
     const float beta, float* Y) {
   caffe_gpu_scal<float>(N, beta, Y);
@@ -428,6 +440,12 @@ void caffe_gpu_dot<double>(const int n, const double* x, const double* y,
 }
 
 template <>
+void caffe_gpu_dot<unsigned long>(const int n, const unsigned long* x, const unsigned long* y,
+    unsigned long * out) {
+	NOT_IMPLEMENTED;
+}
+
+template <>
 void caffe_gpu_asum<float>(const int n, const float* x, float* y, int stride) {
   CUBLAS_CHECK(cublasSasum(Caffe::cublas_handle(), n, x, stride, y));
 }
@@ -435,6 +453,11 @@ void caffe_gpu_asum<float>(const int n, const float* x, float* y, int stride) {
 template <>
 void caffe_gpu_asum<double>(const int n, const double* x, double* y, int stride) {
   CUBLAS_CHECK(cublasDasum(Caffe::cublas_handle(), n, x, stride, y));
+}
+
+template <>
+void caffe_gpu_asum<unsigned long>(const int n, const unsigned long* x, unsigned long* y, int stride) {
+	NOT_IMPLEMENTED;
 }
 
 template <>

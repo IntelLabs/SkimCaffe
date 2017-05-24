@@ -258,7 +258,6 @@ void caffe_gpu_zerout(void * mutable_gpu_data, int count, Dtype th);
 template <typename Dtype>
 void caffe_gpu_zerout(int count, const Dtype *x, Dtype *y, Dtype th);
 
-/** thresholds are multiplied with weight */
 template <typename Dtype>
 void caffe_gpu_zerout(int count, Dtype *x, const Dtype *thresholds, int thresholds_len, Dtype weight);
 
@@ -390,6 +389,10 @@ void caffe_gpu_##name<int>(const int n, const int* x, int* y) { \
 } \
 template <> \
 void caffe_gpu_##name<unsigned int>(const int n, const unsigned int* x, unsigned int* y) { \
+	NOT_IMPLEMENTED; \
+} \
+template <> \
+void caffe_gpu_##name<unsigned long>(const int n, const unsigned long* x, unsigned long* y) { \
 	NOT_IMPLEMENTED; \
 } \
 template <> \
