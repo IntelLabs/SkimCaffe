@@ -258,6 +258,7 @@ void caffe_gpu_zerout(void * mutable_gpu_data, int count, Dtype th);
 template <typename Dtype>
 void caffe_gpu_zerout(int count, const Dtype *x, Dtype *y, Dtype th);
 
+/** thresholds are multiplied with weight */
 template <typename Dtype>
 void caffe_gpu_zerout(int count, Dtype *x, const Dtype *thresholds, int thresholds_len, Dtype weight);
 

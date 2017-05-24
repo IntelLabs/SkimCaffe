@@ -15,6 +15,7 @@
 #include "caffe/layers/conv_relu_pool_layer.hpp"
 #include "caffe/util/cpu_info.hpp"
 #include "caffe/util/sconv.hpp"
+#include "caffe/util/winograd.hpp"
 
 namespace caffe {
 
@@ -377,6 +378,48 @@ void BaseConvolutionLayer<float>::WeightAlign()
 		this->blobs_[0]->Disconnect(Blob<float>::GRPWISE, Solver<float>::getPruneThreshold(), group_);
 	}
 
+  if (conv_param.parameter_sparsity_pattern_histogram() && std::string(this->type()) != "Winograd") {
+    int kernel_h = kernel_shape_.cpu_data()[0];
+    int kernel_w = kernel_shape_.cpu_data()[1];
+
+    CHECK(weight_offset == M*conv_in_channels_/group_*kernel_h*kernel_w);
+    CHECK(N == conv_in_channels_/group_*kernel_h*kernel_w);
+
+    map<unsigned long long, int> hist;
+
+    for (int g = 0; g < group_; ++g) {
+      for (int oc = 0; oc < M; ++oc) {
+        for (int ic = 0; ic < conv_in_channels_/group_; ++ic) {
+          int pattern = 0;
+          for (int k = 0; k < kernel_h*kernel_w; ++k) {
+            if (this->blobs_[0]->cpu_data()[weight_offset*g + (oc*conv_in_channels_/group_ + ic)*kernel_h*kernel_w + k] != 0) {
+              pattern |= (1 << k);
+            }
+          }
+          if (hist.find(pattern) == hist.end()) {
+            hist[pattern] = 0;
+          }
+          ++hist[pattern];
+        } // for each input channel
+      } // for each output channel
+    } // for each group
+
+    set<pair<int, unsigned long long> > inverseHist;
+    for (map<unsigned long long, int>::iterator pattern = hist.begin(); pattern != hist.end(); ++pattern) {
+      inverseHist.insert(make_pair<int, unsigned long long>(pattern->second, pattern->first));
+    }
+
+    fprintf(stderr, "total = %d\n", M*conv_in_channels_);
+    for (set<pair<int, unsigned long long> >::reverse_iterator pattern = inverseHist.rbegin(); pattern != inverseHist.rend(); ++pattern) {
+      fprintf(stderr, "%d\n", pattern->first);
+      for (int h = 0; h < kernel_h; ++h) {
+        for (int w = 0; w < kernel_w; ++w) {
+          fprintf(stderr, "%d ", (pattern->second & (1 << (h*kernel_w + w))) != 0);
+        }
+        fprintf(stderr, "\n");
+      }
+    }
+  }
 }
 
 template <typename Dtype>
@@ -613,7 +656,57 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   // overly large memory usage. In the special case of 1x1 convolution
   // it goes lazily unused to save memory.
   col_buffer_shape_.clear();
-  col_buffer_shape_.push_back(kernel_dim_ * group_ * num_);
+  if (std::string(this->type()) == "Winograd") {
+    int height = conv_input_shape_.cpu_data()[1], width = conv_input_shape_.cpu_data()[2];
+    int kernel_h = kernel_shape_.cpu_data()[0], kernel_w = kernel_shape_.cpu_data()[1];
+    int stride_h = stride_.cpu_data()[0], stride_w = stride_.cpu_data()[1];
+    int dilation_h = dilation_.cpu_data()[0], dilation_w = dilation_.cpu_data()[1];
+
+    if (stride_h != 1 || stride_w != 1 || dilation_h != 1 || dilation_w != 1) {
+      LOG(FATAL) << "non-unit stride or dilation";
+    }
+    if (kernel_h != kernel_w) {
+      LOG(FATAL) << "kernel_h != kernel_w";
+    }
+
+    WinogradGKronG<Dtype> *GKronG = WinogradGKronG<Dtype>::getInstance(kernel_h);
+
+    int tile_h_in_ = GKronG->M;
+    int tile_w_in_ = GKronG->M;
+    int tile_h_out_ = tile_h_in_ - GKronG->N + 1, tile_w_out_ = tile_w_in_ - GKronG->N + 1;
+
+    int pad_h = this->pad_.cpu_data()[0], pad_w = this->pad_.cpu_data()[1];
+    int output_h = (height + 2*pad_h - dilation_h*(kernel_h - 1) - 1)/stride_h + 1, output_w = (width + 2*pad_w - dilation_w*(kernel_w - 1) - 1)/stride_w + 1;
+
+    int ntiles_h_ = (std::max(height + pad_h - tile_h_in_ + 1, output_h) + tile_h_out_ - 1)/tile_h_out_;
+    int ntiles_w_ = (std::max(width + pad_w - tile_w_in_ + 1, output_w) + tile_w_out_ - 1)/tile_w_out_;
+
+    int spatial_count = 1;
+    for (int i = 0; i < num_spatial_axes_; ++i) {
+      if (reverse_dimensions()) {
+        spatial_count *= input_shape(i + 1);
+      } else {
+        spatial_count *= output_shape_[i];
+      }
+    }
+
+    int factor = ceil((double)tile_h_in_*tile_w_in_*ntiles_h_*ntiles_w_/spatial_count);
+
+//    LOG(INFO) <<
+//        "height " << height << " width " << width <<
+//        " kernel_h" << kernel_h << " kernel_w " << kernel_w <<
+//        " stride_h " << stride_h << " stride_w " << stride_w <<
+//        " dilation_h " << dilation_h << " dilation_w " << dilation_w <<
+//        " tile_h_in " << tile_h_in_ << " tile_w_in " << tile_w_in_ <<
+//        " ntiles_h " << ntiles_h_ << " ntiles_w " << ntiles_w_ <<
+//        " spatial_count " << spatial_count <<
+//        " factor " << factor;
+
+    col_buffer_shape_.push_back(std::max(conv_in_channels_, conv_out_channels_)*factor*num_);
+  }
+  else {
+    col_buffer_shape_.push_back(kernel_dim_ * group_ * num_);
+  }
   for (int i = 0; i < num_spatial_axes_; ++i) {
     if (reverse_dimensions()) {
       col_buffer_shape_.push_back(input_shape(i + 1));

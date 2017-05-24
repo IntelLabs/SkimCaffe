@@ -42,14 +42,11 @@ layer {
   param {
     lr_mult: 1
     decay_mult: 1
-    kernel_shape_decay_mult: 0.2
-    breadth_decay_mult: 1
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
     decay_mult: 1
-    kernel_shape_decay_mult: 0
-    breadth_decay_mult: 0
   }
   convolution_param {
     num_output: 32
@@ -103,14 +100,11 @@ layer {
   param {
     lr_mult: 1
     decay_mult: 1
-    kernel_shape_decay_mult: 1
-    breadth_decay_mult: 1
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
     decay_mult: 1
-    kernel_shape_decay_mult: 0
-    breadth_decay_mult: 0
   }
   convolution_param {
     num_output: 32
@@ -164,14 +158,11 @@ layer {
   param {
     lr_mult: 1
     decay_mult: 1
-    kernel_shape_decay_mult: 1
-    breadth_decay_mult: 0.1
+    regularization_type: "L1"
   }
   param {
     lr_mult: 1
     decay_mult: 1
-    kernel_shape_decay_mult: 0
-    breadth_decay_mult: 0
   }
   convolution_param {
     num_output: 64
@@ -212,18 +203,14 @@ layer {
   #connectivity_mode: DISCONNECTED_GRPWISE
   param {
     lr_mult: 1
-#    decay_mult: 250
-#    decay_mult: 20
-#    decay_mult: 0
     decay_mult: 1
-    kernel_shape_decay_mult: 1
-    breadth_decay_mult: 1
+    #decay_mult: 250
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
+    #decay_mult: 0
     decay_mult: 1
-    kernel_shape_decay_mult: 0
-    breadth_decay_mult: 0
   }
   inner_product_param {
     num_output: 10
@@ -237,15 +224,15 @@ layer {
   }
 }
 
-layer {
-  name: "drop1"
-  type: "Dropout"
-  bottom: "ip1"
-  top: "ip1"
-  dropout_param {
-    dropout_ratio: 0.5
-  }
-}
+#layer {
+  #name: "drop1"
+  #type: "Dropout"
+  #bottom: "ip1"
+  #top: "ip1"
+  #dropout_param {
+    #dropout_ratio: 0.5
+  #}
+#}
 
 layer {
   name: "accuracy"

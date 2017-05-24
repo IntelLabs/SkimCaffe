@@ -25,6 +25,7 @@ current_time=${current_time//:/-}
 
 snapshot_path=$folder/${base_lr}_${weight_decay}_${prune_threshold}_${max_threshold_factor}_${block_group_decay}_${current_time}
 mkdir $snapshot_path
+echo $@ > $snapshot_path/cmd.log
 
 solverfile=$snapshot_path/solver.prototxt
 template_file='template_solver.prototxt'
@@ -34,7 +35,7 @@ template_file=$7
 
 cat $folder/${template_file} > $solverfile
 echo "block_group_decay: $block_group_decay" >> $solverfile
-echo "pruen_threshold: $prune_threshold" >> $solverfile
+echo "prune_threshold: $prune_threshold" >> $solverfile
 echo "max_threshold_factor: $max_threshold_factor" >> $solverfile
 echo "weight_decay: $weight_decay" >> $solverfile
 echo "base_lr: $base_lr" >> $solverfile

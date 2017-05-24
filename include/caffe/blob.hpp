@@ -212,7 +212,6 @@ class Blob {
   }
 
   inline const shared_ptr<SyncedMemory>& connectivity() const {
-    CHECK(connectivity_);
     return connectivity_;
   }
 
