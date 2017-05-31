@@ -14,7 +14,7 @@ layer {
   }
   data_param {
     source: "examples/imagenet/ilsvrc12_train_lmdb"
-    batch_size: 256
+    batch_size: 64
     backend: LMDB
   }
 }
@@ -33,7 +33,7 @@ layer {
   }
   data_param {
     source: "examples/imagenet/ilsvrc12_val_lmdb"
-    batch_size: 50
+    batch_size: 4
     backend: LMDB
   }
 }
@@ -423,6 +423,8 @@ layer {
   type: "InnerProduct"
   param {
     lr_mult: 1
+    decay_mult: 0.1
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
@@ -453,6 +455,8 @@ layer {
   type: "InnerProduct"
   param {
     lr_mult: 1
+    decay_mult: 0.1
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
@@ -483,6 +487,8 @@ layer {
   type: "InnerProduct"
   param {
     lr_mult: 1
+    decay_mult: 0.5
+    regularization_type: "L1"
   }
   param {
     lr_mult: 2
