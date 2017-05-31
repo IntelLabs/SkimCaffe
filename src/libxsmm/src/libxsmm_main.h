@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2014-2016, Intel Corporation                                **
+** Copyright (c) 2014-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -47,28 +47,6 @@
 # define LIBXSMM_CPU_DCACHESIZE 32768
 #endif
 
-/** Helper macro to account for libxsmm_init being already executed via GCC constructor attribute */
-#if !defined(LIBXSMM_CTOR) && defined(__GNUC__) && !(defined(__INTEL_COMPILER) && !defined(LIBXSMM_BUILD))
-# if defined(LIBXSMM_BUILD_EXT) && defined(__STATIC)
-#   define LIBXSMM_INIT libxsmm_ext_init/*dummy*/ = libxsmm_init;
-    /**
-     * Global (dummy-)variable which is touched via LIBXSMM_INIT macro
-     * in order to keep the libxsmm_init/libxsmm_finalize symbols
-     * even when linking statically (or only linking libxsmmext).
-     */
-    LIBXSMM_EXTERN_C LIBXSMM_RETARGETABLE void (*libxsmm_ext_init)(void);
-# else
-#   define LIBXSMM_INIT
-# endif
-# define LIBXSMM_CTOR_ATTRIBUTE LIBXSMM_ATTRIBUTE(constructor)
-# define LIBXSMM_DTOR_ATTRIBUTE LIBXSMM_ATTRIBUTE(destructor)
-# define LIBXSMM_CTOR
-#else /* lazy initialization */
-# define LIBXSMM_INIT libxsmm_init();
-# define LIBXSMM_CTOR_ATTRIBUTE
-# define LIBXSMM_DTOR_ATTRIBUTE
-#endif
-
 #if !defined(LIBXSMM_EXT_MIN_NTASKS)
 # define LIBXSMM_MIN_NTASKS(NT) 1
 #endif
@@ -82,6 +60,12 @@
 # define LIBXSMM_NOOP
 #endif
 
+/* Helper macro to eventually (if defined) call libxsmm_init */
+#if !defined(LIBXSMM_CTOR) && !defined(LIBXSMM_INIT)
+# define LIBXSMM_INIT libxsmm_init();
+#elif !defined(LIBXSMM_INIT)
+# define LIBXSMM_INIT
+#endif
 
 typedef union LIBXSMM_RETARGETABLE libxsmm_code_pointer {
   /*const*/void* pmm;
@@ -165,6 +149,8 @@ struct LIBXSMM_RETARGETABLE libxsmm_dnn_conv_handle {
   int upd_ofh_rb;
   int fm_lp_block;              /* additional blocking for low precision datatypes of feature maps */
   int upd_use_thread_fil;
+  int upd_use_external_reduce;
+  int filter_transposed;
 
   /* internal data representation */
   libxsmm_dnn_buffer* input;
@@ -254,8 +240,8 @@ LIBXSMM_API void libxsmm_build(const libxsmm_build_request* request, unsigned re
 /** Updates counters of the statistic, which is shown at program termination. */
 LIBXSMM_API unsigned int libxsmm_update_mmstatistic(int flags, int m, int n, int k, unsigned int ntry, unsigned int ncol);
 
-LIBXSMM_API int libxsmm_gemm_prefetch2uid(int prefetch);
-LIBXSMM_API int libxsmm_gemm_uid2prefetch(int uid);
+LIBXSMM_API int libxsmm_gemm_prefetch2uid(libxsmm_gemm_prefetch_type prefetch);
+LIBXSMM_API libxsmm_gemm_prefetch_type libxsmm_gemm_uid2prefetch(int uid);
 
 LIBXSMM_API size_t libxsmm_dnn_typesize(libxsmm_dnn_datatype datatype);
 
@@ -263,6 +249,8 @@ LIBXSMM_API size_t libxsmm_dnn_typesize(libxsmm_dnn_datatype datatype);
 LIBXSMM_EXTERN_C LIBXSMM_RETARGETABLE int libxsmm_verbosity;
 /** Target architecture (libxsmm_get_target_archid, libxsmm_set_target_archid). */
 LIBXSMM_EXTERN_C LIBXSMM_RETARGETABLE int libxsmm_target_archid;
+/** Try-lock property of the code registry (0: off, 1: enabled). */
+LIBXSMM_EXTERN_C LIBXSMM_RETARGETABLE int libxsmm_dispatch_trylock;
 /** Determines the prefetch strategy, which is used in case of LIBXSMM_PREFETCH_AUTO. */
 LIBXSMM_EXTERN_C LIBXSMM_RETARGETABLE int libxsmm_gemm_auto_prefetch;
 /** Determines if (OpenMP-)tasks are preferred over thread-style parallelization. */

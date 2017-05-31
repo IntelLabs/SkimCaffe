@@ -3,6 +3,7 @@
 
 #include "caffe/layers/conv_relu_layer.hpp"
 #include "caffe/util/math_functions_intel.hpp"
+#include "caffe/util/cpu_info.hpp"
 #include "caffe/util/sconv.hpp"
 
 extern unsigned long long conv_cycles_of_this_batch[1024*16];
@@ -65,6 +66,16 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
   double t2 = 0, t3 = 0;
   padding_time = 0;
   Dtype negative_slope = this->layer_param_.relu_param().negative_slope();
+  if (negative_slope != 0) {
+    LOG(FATAL) << type() << " only supports negative_slope == 0";
+  }
+
+  // JSP: by some reason, if nested omp parallelism is used for MKL, I get a wrong results.
+  // Disable nested omp parallelization for now. We don't need nested parallelism as long as
+  // batch size is big enough. Still, need more investigation.
+  int mkl_max_threads_saved = mkl_get_max_threads();
+  mkl_set_num_threads(1);
+
   for (int i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
     Dtype* top_data = top[i]->mutable_cpu_data();
@@ -85,136 +96,38 @@ void ConvolutionReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom
 //  }
 //  LOG(INFO) << "element-sparsity " << (double)nnz_input/(this->num_*this->conv_in_channels_*height*width) << " channel-sparsity " << (double)num_of_non_zero_channels/(this->num_*this->conv_in_channels_);
 
-#ifdef VECTORIZE_OVER_INPUTS
-    const int VLEN = 16;
-    if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
-#pragma omp parallel for collapse(2)
-      for (int nblock = 0; nblock < this->num_/VLEN; ++nblock) {
-        for (int ic = 0; ic < this->conv_in_channels_; ++ic) {
-          for (int i = 0; i < height; ++i) {
-            for (int j = 0; j < width; ++j) {
-              for (int k = 0; k < VLEN; ++k) {
-                this->input_interleaved_[(((nblock*this->conv_in_channels_ + ic)*(height + pad_h) + i + pad_h)*(width + pad_w) + j + pad_w)*VLEN + k] =
-                    bottom_data[(((nblock*VLEN + k)*this->conv_in_channels_ + ic)*height + i)*width + j];
-              }
-            }
-          }
-        }
-      }
-    }
-#endif
-
 #pragma omp parallel
     {
-      int nthreads = omp_get_num_threads();
       int tid = omp_get_thread_num();
 
-      int nthread_groups = nthreads;
-#ifdef __AVX512F__
-      nthread_groups = NTILES;
-#else
-//      nthread_groups /= 2; // 1 group per core in Xeon
-#endif
-      assert(nthreads%nthread_groups == 0);
-      int nthreads_per_group = nthreads/nthread_groups;
-      int gid = tid/nthreads_per_group;
-      int tid_in_group = tid%nthreads_per_group;
-
-      int n_per_group = (this->num_ + nthread_groups - 1)/nthread_groups;
-      int n_begin = std::min(n_per_group*gid, this->num_);
-      int n_end = std::min(n_begin + n_per_group, this->num_);
-
-#ifdef VECTORIZE_OVER_INPUTS
-      if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
-        n_per_group = (this->num_/VLEN + nthread_groups - 1)/nthread_groups;
-        n_begin = std::min(n_per_group*gid, this->num_/VLEN);
-        n_end = std::min(n_begin + n_per_group, this->num_/VLEN);
-        n_begin *= VLEN;
-        n_end *= VLEN;
-      }
-#endif
+      int n_begin, n_end;
+      cpu::OpenMpManager::getBatchThreadPartition(&n_begin, &n_end, this->num_);
 
       for (int n = n_begin; n < n_end; ++n) { // JSP: this->num_ is batch size
         Dtype *top_current = top_data + n * this->top_dim_;
 
         if (0 == tid) t2 -= omp_get_wtime();
-#ifdef VECTORIZE_OVER_INPUTS
-        if (this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV ||
-            n%VLEN == 0)
-#endif
-        {
-          this->forward_cpu_gemm(
-                bottom_data + n * this->bottom_dim_, weight, top_current, n);
-        }
-
-#ifdef VECTORIZE_OVER_INPUTS
-        if (this->layer_param_.convolution_param().conv_mode() == caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV &&
-            n%VLEN == 0) {
-          assert(this->conv_out_channels_*output_h*output_w == this->top_dim_);
-
-          int oc_per_thread = (this->conv_out_channels_/this->group_ + nthreads_per_group - 1)/nthreads_per_group;
-          int oc_begin = std::min(oc_per_thread*tid_in_group, this->conv_out_channels_/this->group_);
-          int oc_end = std::min(oc_begin + oc_per_thread, this->conv_out_channels_/this->group_);
-
-          for (int g = 0; g < this->group_; ++g) {
-            for (int oc = this->conv_out_channels_/this->group_*g + oc_begin; oc < this->conv_out_channels_/this->group_*g + oc_end; ++oc) {
-              for (int i = 0; i < output_h; ++i) {
-                for (int j = 0; j < output_w; ++j) {
-                  for (int k = 0; k < VLEN; ++k) {
-                    top_data[(((n/VLEN*VLEN + k)*this->conv_out_channels_ + oc)*output_h + i)*output_w + j] =
-                        this->output_interleaved_[(((n/VLEN*this->conv_out_channels_ + oc)*output_h + i)*output_w + j)*VLEN + k];
-  //                static bool printed = false;
-  //                float expected = top_data[((n*this->conv_out_channels_ + oc)*output_h + i)*output_w + j];
-  //                float actual = this->output_interleaved_[(((n/VLEN*this->conv_out_channels_ + oc)*output_h + i)*output_w + j)*VLEN + n%VLEN];
-  //                if (fabs(expected - actual)/fabs(expected) >= 0.01 && !printed) {
-  //                  printf(
-  //                      "n=%d oc=%d i=%d j=%d expected %g actual %g\n",
-  //                      n, oc, i, j, expected, actual);
-  //                  printed = true;
-  //                }
-                  }
-                }
-              }
-            }
-          } // for each group
-        }
-#endif
+        this->forward_cpu_gemm(
+              bottom_data + n * this->bottom_dim_, weight, top_current, n);
 
         if (0 == tid) t2 += omp_get_wtime();
-        if (this->bias_term_ &&
-            this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
-          // JSP: common path of AlexNet
-          this->forward_cpu_bias(top_current, bias);
-        }
-
-        if (0 == tid) t3 -= omp_get_wtime();
-
-        int j_per_thread = (this->top_dim_ + nthreads_per_group - 1)/nthreads_per_group;
-        int tid_in_group = tid%nthreads_per_group;
-        int jbegin = std::min(j_per_thread*tid_in_group, this->top_dim_);
-        int jend = std::min(jbegin + j_per_thread, this->top_dim_);
-
-        if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
-
-        if (negative_slope == 0) {
-          for (int j = jbegin; j < jend; ++j) {
-            top_current[j] = std::max(top_current[j], Dtype(0));
+        if (this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV) {
+          if (this->bias_term_) {
+            // JSP: common path of AlexNet
+            this->forward_cpu_bias(top_current, bias);
+          }
+          // bias is not fused when conv mode is not DIRECT_SCONV
+          for (int i = 0; i < this->top_dim_; ++i) {
+            top_current[i] = std::max(top_current[i], Dtype(0));
           }
         }
-        else {
-          for (int j = jbegin; j < jend; ++j) {
-            top_current[j] =
-                 std::max(top_current[j], Dtype(0)) +
-                 negative_slope * std::min(top_current[j], Dtype(0));
-          }
-        }
-
-        if (0 == tid) t3 += omp_get_wtime();
-      }
+      } // for each input in the batch
     }
   }
 
-  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time << " relu-time " << t3;
+  mkl_set_num_threads(mkl_max_threads_saved);
+
+  LOG(INFO) << this->layer_param_.name() << " wall clock-time " << omp_get_wtime() - t << " padding-time " << padding_time;
 
   double flops = (double)this->num_*this->conv_out_channels_*this->conv_in_channels_/this->group_*output_h*output_w*kernel_h*kernel_w*2;
 

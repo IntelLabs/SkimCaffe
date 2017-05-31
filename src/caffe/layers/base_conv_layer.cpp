@@ -13,6 +13,7 @@
 #include "caffe/util/math_functions_intel.hpp"
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
 #include "caffe/layers/conv_relu_pool_layer.hpp"
+#include "caffe/util/cpu_info.hpp"
 #include "caffe/util/sconv.hpp"
 #include "caffe/util/winograd.hpp"
 
@@ -55,40 +56,9 @@ void BaseConvolutionLayer<double>::WeightAlign(){
 #define CHKERR_LIBXSMM_DNN(A) if ( A != LIBXSMM_DNN_SUCCESS ) fprintf(stderr, "%s\n", libxsmm_dnn_get_error(A) );
 
 template <>
-void BaseConvolutionLayer<float>::WeightAlign(){
-
-  if (!barrier_initialized) {
-    int nthreads = omp_get_max_threads();
-    int nthread_groups = nthreads;
-#ifdef __AVX512F__
-    nthread_groups = NTILES;
-#else
-  //  nthread_groups = nthreads/2;
-#endif
-
-    if (nthreads%nthread_groups != 0) {
-      LOG(FATAL) << "OMP_NUM_THREADS must be a multiple of " << nthread_groups;
-    }
-
-    assert(nthreads%nthread_groups == 0);
-    int nthreads_per_group = nthreads/nthread_groups;
-    if (nthread_groups != nthreads) {
-      for (int i = 0; i < nthread_groups; ++i) {
-        barriers[i] = new synk::Barrier(1, nthreads_per_group);
-      }
-#pragma omp parallel
-      {
-        assert(omp_get_num_threads() == nthreads);
-
-        int tid = omp_get_thread_num();
-        int gid = tid/nthreads_per_group;
-        int tid_in_group = tid%nthreads_per_group;
-
-        barriers[gid]->init(tid_in_group);
-      }
-    }
-    barrier_initialized = true;
-  }
+void BaseConvolutionLayer<float>::WeightAlign()
+{
+  cpu::OpenMpManager::getThreadGroupBarriers(this->num_);
 
 	CHECK_EQ(this->blobs_[0]->num_axes(),4);//caffe now supports any dimension
 	//is_sparse_format_weights_ = false;
@@ -114,7 +84,7 @@ void BaseConvolutionLayer<float>::WeightAlign(){
   int pad_w = pad_.cpu_data()[1];
 
   if (caffe::ConvolutionParameter_ConvMode_DIRECT_SCONV == conv_param.conv_mode()) {
-    int input_padded_len = conv_in_channels_ * (height + pad_h) * (width + pad_w) + pad_h * (width + 2 * pad_w);
+    int input_padded_len = conv_in_channels_ * (height + pad_h) * (width + pad_w) + pad_h * (width + 2 * pad_w) + VLEN - 1;
     posix_memalign((void **)&input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
     memset(input_padded_, 4096, sizeof(float)*omp_get_max_threads()*input_padded_len);
   }
@@ -365,13 +335,23 @@ void BaseConvolutionLayer<float>::WeightAlign(){
           libxsmm_handle_[tid] = libxsmm_dnn_create_conv_handle_check( libxsmm_conv_desc_, &status );
           CHKERR_LIBXSMM_DNN( status );
 
-          libxsmm_input_[tid] = libxsmm_dnn_create_input_buffer_check( libxsmm_handle_[tid], &status );
+          float *input_buf = (float *)libxsmm_aligned_malloc(
+            libxsmm_conv_desc_.C*libxsmm_conv_desc_.H*libxsmm_conv_desc_.W*sizeof(float), 2097152);
+          libxsmm_input_[tid] = libxsmm_dnn_link_input_buffer_check(
+            libxsmm_handle_[tid], input_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status);
           CHKERR_LIBXSMM_DNN( status );
-          libxsmm_output_[tid] = libxsmm_dnn_create_output_buffer_check( libxsmm_handle_[tid], &status );
+
+          float *output_buf = (float *)libxsmm_aligned_malloc(
+            libxsmm_conv_desc_.K*libxsmm_conv_desc_.H*libxsmm_conv_desc_.W*sizeof(float), 2097152);
+          libxsmm_output_[tid] = libxsmm_dnn_link_output_buffer_check(
+            libxsmm_handle_[tid], output_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status);
           CHKERR_LIBXSMM_DNN( status );
 
           if (0 == tid) {
-            libxsmm_filter_ = libxsmm_dnn_create_filter_check( libxsmm_handle_[tid], &status );
+            float *filter_buf = (float *)libxsmm_aligned_malloc(
+              libxsmm_conv_desc_.K*libxsmm_conv_desc_.C*libxsmm_conv_desc_.R*libxsmm_conv_desc_.S*sizeof(float), 2097152);
+            libxsmm_filter_ = libxsmm_dnn_link_filter_check(
+              libxsmm_handle_[tid], filter_buf, LIBXSMM_DNN_CONV_FORMAT_LIBXSMM_PTR, &status );
             CHKERR_LIBXSMM_DNN( status );
           }
 
@@ -735,6 +715,7 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     }
   }
   col_buffer_.Reshape(col_buffer_shape_);
+  col_buffer_.cpu_data();
 
   if(!reverse_dimensions()){
 	  col_buf_mask_.Reshape(1,1,1,kernel_dim_*group_);
@@ -776,19 +757,8 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
     const float* weights, float* output, int batch_idx, bool skip_im2col) {
   const float* col_buff = input;
 
-  int nthreads = omp_get_num_threads();
   int tid = omp_get_thread_num();
-
-  int nthread_groups = nthreads;
-#ifdef __AVX512F__
-  if (this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV) {
-//    if (height != 27) nthread_groups = NTILES;
-  }
-#endif
-  assert(nthreads%nthread_groups == 0);
-  int nthreads_per_group = nthreads/nthread_groups;
-  int gid = tid/nthreads_per_group;
-  int tid_in_group = tid%nthreads_per_group;
+  int gid = cpu::OpenMpManager::getThreadGroupNum(num_);
 
   float *input_padded;
   int input_padded_len;
@@ -800,7 +770,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 	  int pad_h = pad_.cpu_data()[0];
 	  int pad_w = pad_.cpu_data()[1];
 
-	  input_padded_len = conv_in_channels_ * (height + pad_h) * (width + pad_w) + pad_h * (width + 2 * pad_w);
+	  input_padded_len = conv_in_channels_ * (height + pad_h) * (width + pad_w) + pad_h * (width + 2 * pad_w) + VLEN - 1;
 	  if (pad_h == 0 && pad_w == 0) {
 	    input_padded = (float *)input;
 	  }
@@ -809,9 +779,9 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
 	    input_padded = input_padded_ + input_padded_len*gid;
 
-	    int c_per_thread = (conv_in_channels_ + nthreads_per_group - 1)/nthreads_per_group;
-	    int cbegin = std::min(c_per_thread*tid_in_group, conv_in_channels_);
-	    int cend = std::min(cbegin + c_per_thread, conv_in_channels_);
+      int cbegin, cend;
+      cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+          &cbegin, &cend, conv_in_channels_, num_);
 
       {
         for (int in_channel = cbegin; in_channel < cend; ++in_channel) {
@@ -824,7 +794,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
         }
       }
 
-      if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
+      cpu::OpenMpManager::barrierGroup(num_);
 
       if (tid == 0) padding_time += omp_get_wtime();
 	  }
@@ -846,9 +816,9 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
 
       input_padded = input_padded_ + input_padded_len*gid;
 
-      int c_per_thread = (conv_in_channels_ + nthreads_per_group - 1)/nthreads_per_group;
-      int cbegin = std::min(c_per_thread*tid_in_group, conv_in_channels_);
-      int cend = std::min(cbegin + c_per_thread, conv_in_channels_);
+      int cbegin, cend;
+      cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+          &cbegin, &cend, conv_in_channels_, num_);
 
       {
         for (int in_channel = cbegin; in_channel < cend; ++in_channel) {
@@ -861,7 +831,7 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
         }
       }
 
-      if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
+      cpu::OpenMpManager::barrierGroup(num_);
 
       if (tid == 0) padding_time += omp_get_wtime();
     }
@@ -940,16 +910,15 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
       int nnz = rowptr[M];
       int col_major_ic_block = get_col_major_ic_block(nnz, M, conv_in_channels_/group_);
 
-		  if (height == 27 && width == 27 && pad_h == 2 && pad_w == 2 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5 && dilation_h == 1 && dilation_w == 1) {
+		  if (height == 27 && width == 27 &&
+		      pad_h == 2 && pad_w == 2 &&
+		      stride_h == 1 && stride_w == 1 &&
+		      kernel_w == 5 && kernel_h == 5 &&
+		      dilation_h == 1 && dilation_w == 1 &&
+		      std::string(type()) == "ConvolutionReLUPoolLRN") {
 		    // 2nd layer of AlexNet fused with bias term and pooling
 
-        if (std::string(type()) != "ConvolutionReLUPoolLRN" && 0 == tid) {
-          LOG(FATAL) << "DIRECT_SCONV for 5x5 convolution only supported for ConvolutionReLUPoolLRN fused layer";
-#pragma omp barrier
-          return;
-        }
-
-        caffe_cpu_sconv<float>(
+		    caffe_cpu_sconv_fused_with_relu_and_pooling<float>(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
             conv_in_channels_/group_,
             height, width,
@@ -958,48 +927,15 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             dilation_h, dilation_w,
             rowptr, colidx, values,
             kernel_h, kernel_w,
-            (const int **)(&weight_rowptr_blocked_[0] + g*ncolblock),
-            (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
-            (const float **)(&weight_values_blocked_[0] + g*ncolblock),
-            ncolblock,
             this->blobs_[1]->cpu_data(),
             ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->mutable_cpu_data() + ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g),
             ((ConvolutionReLUPoolLRNLayer<float> *)this)->max_idx_.mutable_cpu_data() + ((ConvolutionReLUPoolLRNLayer<float> *)this)->pool_top_[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g),
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
+            num_);
 		  }
-		  else if (height == 28 && width == 28 && pad_h == 0 && pad_w == 0 && stride_h == 1 && stride_w == 1 && kernel_w == 5 && kernel_h == 5 && dilation_h == 1 && dilation_w == 1) {
-		    // 2nd layer of OverFeat fused with bias term and pooling
-		    assert(std::string(type()) == "ConvolutionReLUPool");
-
-		    const float *bias = this->blobs_[1]->cpu_data();
-		    const float *bm = bias_multiplier_.cpu_data();
-		    float *pool_top = (*((ConvolutionReLUPoolLayer<float> *)this)->top_ptr_)[0]->mutable_cpu_data() + (*((ConvolutionReLUPoolLayer<float> *)this)->top_ptr_)[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g);
-		    int *mask = ((ConvolutionReLUPoolLayer<float> *)this)->max_idx_.mutable_cpu_data() + (*((ConvolutionReLUPoolLayer<float> *)this)->top_ptr_)[0]->offset(0, 1)*(conv_out_channels_*batch_idx + M*g);
-
-        caffe_cpu_sconv<float>(
-            input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
-            conv_in_channels_/group_,
-            height, width,
-            pad_h, pad_w,
-            stride_h, stride_w,
-            dilation_h, dilation_w,
-            rowptr, colidx, values,
-            kernel_h, kernel_w,
-            (const int **)(&weight_rowptr_blocked_[0] + g*ncolblock),
-            (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
-            (const float **)(&weight_values_blocked_[0] + g*ncolblock),
-            ncolblock,
-            bias,
-            pool_top,
-            mask,
-            output + output_offset_ * g,
-            M,
-            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
-		  }
-		  else {
-        caffe_cpu_sconv<float>(
+		  else if (std::string(type()) == "ConvolutionReLU") {
+        caffe_cpu_sconv<true /*fuse-relu*/>(
             input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
             conv_in_channels_/group_,
             height, width,
@@ -1013,10 +949,28 @@ void BaseConvolutionLayer<float>::forward_cpu_gemm(const float* input,
             (const float **)(&weight_values_blocked_[0] + g*ncolblock),
             ncolblock,
             this->blobs_[1]->cpu_data(),
-            NULL, NULL,
             output + output_offset_ * g,
             M,
-            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16));
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16), num_);
+		  }
+		  else {
+        caffe_cpu_sconv(
+            input_padded + conv_in_channels_/group_ * g * (height + pad_h) * (width + pad_w),
+            conv_in_channels_/group_,
+            height, width,
+            pad_h, pad_w,
+            stride_h, stride_w,
+            dilation_h, dilation_w,
+            rowptr, colidx, values,
+            kernel_h, kernel_w,
+            (const int **)(&weight_rowptr_blocked_[0] + g*ncolblock),
+            (const int **)(&weight_colidx_blocked_[0] + g*ncolblock),
+            (const float **)(&weight_values_blocked_[0] + g*ncolblock),
+            ncolblock,
+            this->blobs_[1]->cpu_data(),
+            output + output_offset_ * g,
+            M,
+            output_scratch_ + tid*OC_BLOCK*output_h*((output_w + 16 - 1)/16*16), num_);
 		  }
 
 		  break;

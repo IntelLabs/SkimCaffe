@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2015-2016, Intel Corporation                                **
+** Copyright (c) 2015-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -107,10 +107,14 @@ LIBXSMM_INLINE LIBXSMM_RETARGETABLE void init(int seed, REAL_TYPE *LIBXSMM_RESTR
 # pragma omp parallel for private(i)
 #endif
   for (i = 0; i < ncols; ++i) {
-    libxsmm_blasint j;
-    for (j = 0; j < nrows; ++j) {
+    libxsmm_blasint j = 0;
+    for (; j < nrows; ++j) {
       const libxsmm_blasint k = i * ld + j;
       dst[k] = (REAL_TYPE)(seed1 / (k + 1));
+    }
+    for (; j < ld; ++j) {
+      const libxsmm_blasint k = i * ld + j;
+      dst[k] = (REAL_TYPE)seed;
     }
   }
 }
@@ -219,6 +223,11 @@ int main(int argc, char* argv[])
 #endif
       // initialize LIBXSMM
       libxsmm_init();
+#if !defined(LIBXSMM_OFFLOAD_TARGET)
+      // some more setup similar to CP2K/intel branch
+      libxsmm_set_gemm_auto_prefetch(LIBXSMM_X86_AVX512_MIC != libxsmm_get_target_archid() ? LIBXSMM_PREFETCH_AL2BL2_VIA_C : LIBXSMM_PREFETCH_BL2_VIA_C);
+#endif
+      //libxsmm_set_dispatch_trylock(1);
 
       fprintf(stdout, "m=%i n=%i k=%i size=%i memory=%.1f MB (%s)\n\n", m, n, k, s,
         1.0 * (s * (asize + bsize) * sizeof(T)) / (1 << 20), 8 == sizeof(T) ? "DP" : "SP");
@@ -237,7 +246,7 @@ int main(int argc, char* argv[])
       T *const expect = c;
 #endif
       // eventually JIT-compile the requested kernel
-      const libxsmm_mmfunction<T> xmm(m, n, k);
+      const libxsmm_mmfunction<T> xmm(LIBXSMM_FLAGS, m, n, k, LIBXSMM_PREFETCH);
 
       { // LAPACK/BLAS3 (warmup BLAS Library)
         std::fill_n(expect, csize, zero);

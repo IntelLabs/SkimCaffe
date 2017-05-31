@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2016, Intel Corporation                                     **
+** Copyright (c) 2016-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -48,10 +48,14 @@ LIBXSMM_INLINE LIBXSMM_RETARGETABLE void init(int seed, REAL_TYPE *LIBXSMM_RESTR
 # pragma omp parallel for private(i)
 #endif
   for (i = 0; i < ncols; ++i) {
-    libxsmm_blasint j;
-    for (j = 0; j < nrows; ++j) {
+    libxsmm_blasint j = 0;
+    for (; j < nrows; ++j) {
       const libxsmm_blasint k = i * ld + j;
       dst[k] = (REAL_TYPE)(seed1 / (k + 1));
+    }
+    for (; j < ld; ++j) {
+      const libxsmm_blasint k = i * ld + j;
+      dst[k] = (REAL_TYPE)seed;
     }
   }
 }

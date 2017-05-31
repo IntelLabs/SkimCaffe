@@ -12,6 +12,7 @@
 #include "caffe/net.hpp"
 #include "caffe/parallel.hpp"
 #include "caffe/proto/caffe.pb.h"
+#include "caffe/util/cpu_info.hpp" // Intel caffe
 #include "caffe/util/hdf5.hpp"
 #include "caffe/util/insert_splits.hpp"
 #include "caffe/util/math_functions.hpp"
@@ -52,6 +53,22 @@ void Net<Dtype>::Init(const NetParameter& in_param) {
   total_time_ = 0;
   CHECK(Caffe::root_solver() || root_net_)
       << "root_net_ needs to be set for all non-root solvers";
+
+#ifdef _OPENMP // Intel caffe
+  static bool executed = false;
+  if (!executed) {
+    if (Caffe::mode() == Caffe::GPU) {
+      caffe::cpu::OpenMpManager::setGpuEnabled();
+    } else {
+      caffe::cpu::OpenMpManager::setGpuDisabled();
+    }
+
+    caffe::cpu::OpenMpManager::bindOpenMpThreads();
+    caffe::cpu::OpenMpManager::printVerboseInformation();
+  }
+#endif
+
+
   // Set phase from the state.
   phase_ = in_param.state().phase();
   // Filter layers based on their include/exclude rules and

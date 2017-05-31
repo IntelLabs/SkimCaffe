@@ -45,7 +45,7 @@ VERSION_MAJOR ?= $(shell $(PYTHON) $(SCRDIR)/libxsmm_utilities.py 1)
 VERSION_MINOR ?= $(shell $(PYTHON) $(SCRDIR)/libxsmm_utilities.py 2)
 
 # THRESHOLD problem size (M x N x K) determining when to use BLAS; can be zero
-THRESHOLD ?= $(shell echo $$((80 * 80 * 80)))
+THRESHOLD ?= $(shell echo $$((128 * 128 * 128)))
 
 # Generates M,N,K-combinations for each comma separated group e.g., "1, 2, 3" gnerates (1,1,1), (2,2,2),
 # and (3,3,3). This way a heterogeneous set can be generated e.g., "1 2, 3" generates (1,1,1), (1,1,2),
@@ -184,6 +184,11 @@ ifneq (1,$(CACHE))
   DFLAGS += -DLIBXSMM_CACHESIZE=$(CACHE)
 endif
 
+# disable lazy initialization and rely on ctor attribute
+ifeq (0,$(INIT))
+  DFLAGS += -DLIBXSMM_CTOR
+endif
+
 # state to be excluded from tracking the (re-)build state
 EXCLUDE_STATE = BLAS_WARNING PREFIX
 
@@ -222,11 +227,11 @@ endif
 INDICES ?= $(shell $(PYTHON) $(SCRDIR)/libxsmm_utilities.py -1 $(THRESHOLD) $(words $(MNK)) $(MNK) $(words $(M)) $(words $(N)) $(M) $(N) $(K))
 NINDICES = $(words $(INDICES))
 
-HEADERS = $(shell ls -1 $(SRCDIR)/*.h 2> /dev/null | tr "\n" " ") \
-          $(shell ls -1 $(SRCDIR)/template/*.c 2> /dev/null | tr "\n" " ") \
-          $(SRCDIR)/libxsmm_gemm_diff.c $(SRCDIR)/libxsmm_hash.c \
-          $(ROOTDIR)/include/libxsmm_dnn.h \
+HEADERS = $(shell ls -1 $(SRCDIR)/template/*.c 2> /dev/null | tr "\n" " ") \
+          $(shell ls -1 $(SRCDIR)/*.h 2> /dev/null | tr "\n" " ") \
+          $(SRCDIR)/libxsmm_hash.c $(SRCDIR)/libxsmm_gemm_diff.c \
           $(ROOTDIR)/include/libxsmm_cpuid.h \
+          $(ROOTDIR)/include/libxsmm_dnn.h \
           $(ROOTDIR)/include/libxsmm_frontend.h \
           $(ROOTDIR)/include/libxsmm_generator.h \
           $(ROOTDIR)/include/libxsmm_intrinsics_x86.h \
@@ -236,32 +241,24 @@ HEADERS = $(shell ls -1 $(SRCDIR)/*.h 2> /dev/null | tr "\n" " ") \
           $(ROOTDIR)/include/libxsmm_sync.h \
           $(ROOTDIR)/include/libxsmm_timer.h \
           $(ROOTDIR)/include/libxsmm_typedefs.h
+SRCFILES_LIB = $(patsubst %,$(SRCDIR)/%, \
+          libxsmm_main.c libxsmm_cpuid_x86.c libxsmm_malloc.c \
+          libxsmm_sync.c libxsmm_dump.c libxsmm_timer.c libxsmm_perf.c \
+          libxsmm_gemm.c libxsmm_trans.c libxsmm_spmdm.c \
+          libxsmm_dnn.c libxsmm_dnn_handle.c \
+          libxsmm_dnn_convolution_forward.c \
+          libxsmm_dnn_convolution_backward.c \
+          libxsmm_dnn_convolution_weight_update.c)
 
 SRCFILES_KERNELS = $(patsubst %,$(BLDDIR)/mm_%.c,$(INDICES))
-SRCFILES_GEN_LIB = $(patsubst %,$(SRCDIR)/%,$(wildcard $(SRCDIR)/generator_*.c) \
-                   libxsmm_cpuid_x86.c libxsmm_malloc.c libxsmm_sync.c \
-                   libxsmm_timer.c libxsmm_trace.c libxsmm_perf.c)
+SRCFILES_GEN_LIB = $(patsubst %,$(SRCDIR)/%,$(wildcard $(SRCDIR)/generator_*.c) libxsmm_trace.c)
 SRCFILES_GEN_GEMM_BIN = $(patsubst %,$(SRCDIR)/%,libxsmm_generator_gemm_driver.c)
 SRCFILES_GEN_CONV_BIN = $(patsubst %,$(SRCDIR)/%,libxsmm_generator_convolution_driver.c)
 OBJFILES_GEN_GEMM_BIN = $(patsubst %,$(BLDDIR)/intel64/%.o,$(basename $(notdir $(SRCFILES_GEN_GEMM_BIN))))
 OBJFILES_GEN_CONV_BIN = $(patsubst %,$(BLDDIR)/intel64/%.o,$(basename $(notdir $(SRCFILES_GEN_CONV_BIN))))
 OBJFILES_GEN_LIB = $(patsubst %,$(BLDDIR)/intel64/%.o,$(basename $(notdir $(SRCFILES_GEN_LIB))))
-OBJFILES_HST = $(BLDDIR)/intel64/libxsmm_main.o $(BLDDIR)/intel64/libxsmm_dump.o \
-               $(BLDDIR)/intel64/libxsmm_gemm.o $(BLDDIR)/intel64/libxsmm_trans.o \
-               $(BLDDIR)/intel64/libxsmm_spmdm.o \
-               $(BLDDIR)/intel64/libxsmm_dnn.o $(BLDDIR)/intel64/libxsmm_dnn_handle.o \
-               $(BLDDIR)/intel64/libxsmm_dnn_convolution_forward.o \
-               $(BLDDIR)/intel64/libxsmm_dnn_convolution_backward.o \
-               $(BLDDIR)/intel64/libxsmm_dnn_convolution_weight_update.o
-OBJFILES_MIC = $(BLDDIR)/mic/libxsmm_main.o $(BLDDIR)/mic/libxsmm_dump.o \
-               $(BLDDIR)/mic/libxsmm_gemm.o $(BLDDIR)/mic/libxsmm_trans.o \
-               $(BLDDIR)/mic/libxsmm_dnn.o $(BLDDIR)/mic/libxsmm_dnn_handle.o \
-               $(BLDDIR)/mic/libxsmm_dnn_convolution_forward.o \
-               $(BLDDIR)/mic/libxsmm_dnn_convolution_backward.o \
-               $(BLDDIR)/mic/libxsmm_dnn_convolution_weight_update.o \
-               $(BLDDIR)/mic/libxsmm_cpuid_x86.o $(BLDDIR)/mic/libxsmm_malloc.o \
-               $(BLDDIR)/mic/libxsmm_sync.o $(BLDDIR)/mic/libxsmm_timer.o \
-               $(BLDDIR)/mic/libxsmm_trace.o $(BLDDIR)/mic/libxsmm_perf.o
+OBJFILES_HST = $(patsubst %,$(BLDDIR)/intel64/%.o,$(basename $(notdir $(SRCFILES_LIB))))
+OBJFILES_MIC = $(patsubst %,$(BLDDIR)/mic/%.o,$(basename $(notdir $(SRCFILES_LIB))))
 KRNOBJS_HST  = $(patsubst %,$(BLDDIR)/intel64/mm_%.o,$(INDICES))
 KRNOBJS_MIC  = $(patsubst %,$(BLDDIR)/mic/mm_%.o,$(INDICES))
 EXTOBJS_HST  = $(BLDDIR)/intel64/libxsmm_ext.o \
@@ -279,7 +276,11 @@ ifneq (,$(strip $(FC)))
 endif
 
 .PHONY: libxsmm
+ifeq (0,$(COMPATIBLE))
 libxsmm: lib generator
+else
+libxsmm: lib
+endif
 
 .PHONY: lib
 lib: headers drytest lib_hst lib_mic
@@ -289,6 +290,12 @@ all: libxsmm samples
 
 .PHONY: headers
 headers: cheader cheader_only fheader
+
+.PHONY: header-only
+header-only: cheader_only
+
+.PHONY: header_only
+header_only: header-only
 
 .PHONY: interface
 interface: headers module
@@ -603,7 +610,9 @@ endef
 EXTCFLAGS = -DLIBXSMM_BUILD_EXT
 ifneq (0,$(STATIC))
 ifneq (0,$(WRAP))
+ifneq (,$(strip $(WRAP)))
   EXTCFLAGS += -DLIBXSMM_GEMM_WRAP=$(WRAP)
+endif
 endif
 endif
 
@@ -1253,8 +1262,9 @@ $(DOCDIR)/libxsmm.pdf: $(DOCDIR)/.make $(ROOTDIR)/README.md
 	@pandoc -D latex \
 	| sed \
 		-e 's/\(\\documentclass\[..*\]{..*}\)/\1\n\\pagenumbering{gobble}\n\\RedeclareSectionCommands[beforeskip=-1pt,afterskip=1pt]{subsection,subsubsection}/' \
-		-e 's/\\usepackage{listings}/\\usepackage{listings}\\lstset{basicstyle=\\footnotesize\\ttfamily}/' > \
-		$(TMPFILE).tex
+		-e 's/\\usepackage{listings}/\\usepackage{listings}\\lstset{basicstyle=\\footnotesize\\ttfamily}/' \
+		-e 's/\(\\usepackage.*{hyperref}\)/\\usepackage[hyphens]{url}\n\1/' \
+		> $(TMPFILE).tex
 	@iconv -t utf-8 $(ROOTDIR)/README.md \
 	| sed \
 		-e 's/\[\[..*\](..*)\]//g' \
@@ -1281,8 +1291,9 @@ $(DOCDIR)/cp2k.pdf: $(DOCDIR)/.make $(ROOTDIR)/documentation/cp2k.md
 	@pandoc -D latex \
 	| sed \
 		-e 's/\(\\documentclass\[..*\]{..*}\)/\1\n\\pagenumbering{gobble}\n\\RedeclareSectionCommands[beforeskip=-1pt,afterskip=1pt]{subsection,subsubsection}/' \
-		-e 's/\\usepackage{listings}/\\usepackage{listings}\\lstset{basicstyle=\\footnotesize\\ttfamily}/' > \
-		$(TMPFILE).tex
+		-e 's/\\usepackage{listings}/\\usepackage{listings}\\lstset{basicstyle=\\footnotesize\\ttfamily}/' \
+		-e 's/\(\\usepackage.*{hyperref}\)/\\usepackage[hyphens]{url}\n\1/' \
+		> $(TMPFILE).tex
 	@iconv -t utf-8 $(ROOTDIR)/documentation/cp2k.md \
 	| sed \
 		-e 's/\[\[..*\](..*)\]//g' \
@@ -1306,51 +1317,43 @@ $(DOCDIR)/cp2k.pdf: $(DOCDIR)/.make $(ROOTDIR)/documentation/cp2k.md
 .PHONY: documentation
 documentation: $(DOCDIR)/libxsmm.pdf $(DOCDIR)/cp2k.pdf
 
-.PHONY: clean-minimal
-clean-minimal:
-	@rm -rf $(SCRDIR)/__pycache__
-	@rm -f $(SCRDIR)/libxsmm_utilities.pyc
-	@touch $(INCDIR)/.make 2> /dev/null || true
-	@touch $(SPLDIR)/cp2k/.make
-	@touch $(SPLDIR)/smm/.make
-	@touch $(SPLDIR)/nek/.make
-
 .PHONY: clean
-clean: clean-minimal
-	@rm -f $(OBJECTS) $(FTNOBJS) $(SRCFILES_KERNELS)
-	@rm -f $(BLDDIR)/libxsmm_dispatch.h
-	@if [ "" = "$$(find build -type f -not -name .make 2> /dev/null)" ]; then \
-		rm -rf $(BLDDIR); \
-	fi
-
-.PHONY: realclean
-realclean: clean
+clean:
 ifneq ($(abspath $(BLDDIR)),$(ROOTDIR))
 ifneq ($(abspath $(BLDDIR)),$(abspath .))
 	@rm -rf $(BLDDIR)
 endif
 endif
+ifneq (,$(wildcard $(BLDDIR))) # still exists
+	@rm -f $(OBJECTS) $(FTNOBJS) $(SRCFILES_KERNELS) $(BLDDIR)/libxsmm_dispatch.h
+	@rm -f $(BLDDIR)/*.gcno $(BLDDIR)/*.gcda $(BLDDIR)/*.gcov
+endif
+	@find . -type f \( -name .make -or -name .state \) -exec rm {} \;
+	@rm -f $(SCRDIR)/libxsmm_utilities.pyc
+	@rm -rf $(SCRDIR)/__pycache__
+
+.PHONY: realclean
+realclean: clean
 ifneq ($(abspath $(OUTDIR)),$(ROOTDIR))
 ifneq ($(abspath $(OUTDIR)),$(abspath .))
 	@rm -rf $(OUTDIR)
 endif
 endif
-ifneq ($(abspath $(BINDIR)),$(ROOTDIR))
-ifneq ($(abspath $(BINDIR)),$(abspath .))
-	@rm -rf $(BINDIR)
-endif
-endif
-ifneq (,$(wildcard $(OUTDIR)))
+ifneq (,$(wildcard $(OUTDIR))) # still exists
 	@rm -f $(OUTDIR)/libxsmm.$(LIBEXT)* $(OUTDIR)/mic/libxsmm.$(LIBEXT)*
 	@rm -f $(OUTDIR)/libxsmmf.$(LIBEXT)* $(OUTDIR)/mic/libxsmmf.$(LIBEXT)*
 	@rm -f $(OUTDIR)/libxsmmext.$(LIBEXT)* $(OUTDIR)/mic/libxsmmext.$(LIBEXT)*
 	@rm -f $(OUTDIR)/libxsmmnoblas.$(LIBEXT)* $(OUTDIR)/mic/libxsmmnoblas.$(LIBEXT)*
 	@rm -f $(OUTDIR)/libxsmmgen.$(LIBEXT)*
 endif
-ifneq (,$(wildcard $(BINDIR)))
+ifneq ($(abspath $(BINDIR)),$(ROOTDIR))
+ifneq ($(abspath $(BINDIR)),$(abspath .))
+	@rm -rf $(BINDIR)
+endif
+endif
+ifneq (,$(wildcard $(BINDIR))) # still exists
 	@rm -f $(BINDIR)/libxsmm_*_generator
 endif
-	@rm -f *.gcno *.gcda *.gcov
 	@rm -f $(SPLDIR)/cp2k/cp2k-perf.sh
 	@rm -f $(SPLDIR)/smm/smmf-perf.sh
 	@rm -f $(SPLDIR)/nek/grad-perf.sh
@@ -1362,32 +1365,16 @@ endif
 	@rm -f $(INCDIR)/libxsmm.mod
 	@rm -f $(INCDIR)/libxsmm.f
 	@rm -f $(INCDIR)/libxsmm.h
-	@rm -f $(INCDIR)/.make
-	@rm -f $(DOCDIR)/.make
-	@rm -f .make .state
 
 .PHONY: clean-all
 clean-all: clean
-	@cd $(TSTDIR)           && $(MAKE) --no-print-directory clean-minimal
-	@cd $(SPLDIR)/cp2k      && $(MAKE) --no-print-directory clean-minimal
-	@cd $(SPLDIR)/dispatch  && $(MAKE) --no-print-directory clean-minimal
-	@cd $(SPLDIR)/nek       && $(MAKE) --no-print-directory clean-minimal
-	@cd $(SPLDIR)/smm       && $(MAKE) --no-print-directory clean-minimal
-	@cd $(SPLDIR)/wrap      && $(MAKE) --no-print-directory clean-minimal
+	@find $(ROOTDIR) -type f -name Makefile -exec dirname {} \; | xargs -I {} $(SHELL) -c \
+		"cd {}; $(MAKE) --no-print-directory clean 2> /dev/null || true"
 
 .PHONY: realclean-all
 realclean-all: realclean
-	@cd $(TSTDIR)           && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/barrier   && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/cp2k      && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/dispatch  && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/dnn       && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/nek       && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/smm       && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/specfem   && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/transpose && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/wrap      && $(MAKE) --no-print-directory realclean
-	@cd $(SPLDIR)/xgemm     && $(MAKE) --no-print-directory realclean
+	@find $(ROOTDIR) -type f -name Makefile -exec dirname {} \; | xargs -I {} $(SHELL) -c \
+		"cd {}; $(MAKE) --no-print-directory realclean 2> /dev/null || true"
 
 # Dummy prefix
 ifneq (,$(strip $(PREFIX)))

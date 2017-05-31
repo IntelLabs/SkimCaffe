@@ -4,6 +4,7 @@
 
 #include "caffe/layers/conv_relu_pool_lrn_layer.hpp"
 #include "caffe/util/math_functions_intel.hpp"
+#include "caffe/util/cpu_info.hpp"
 
 unsigned long long conv_cycles_of_this_batch[1024*16], transpose_cycle = 0, pool_cycle = 0;
 std::map<std::string, unsigned long long> total_conv_cycles;
@@ -136,7 +137,7 @@ void ConvolutionReLUPoolLRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& 
      product_layer_->SetUp(product_bottom_vec_, top);
    }
    if (this->layer_param_.relu_param().negative_slope() != 0) {
-     LOG(FATAL) << "ConvolutionReLUPoolLayer only supports negative_slope == 0";
+     LOG(FATAL) << type() << " only supports negative_slope == 0";
    }
 }
 
@@ -301,24 +302,10 @@ void ConvolutionReLUPoolLRNLayer<float>::Forward_cpu(const vector<Blob<float>*>&
 
 #pragma omp parallel
     {
-      int nthreads = omp_get_num_threads();
       int tid = omp_get_thread_num();
-      int nthread_groups = nthreads;
 
-#ifdef __AVX512F__
-//      if (this->layer_param_.convolution_param().conv_mode() != caffe::ConvolutionParameter_ConvMode_DIRECT_DCONV) {
-//        nthread_groups = NTILES;
-//      }
-#endif
-
-      assert(nthreads%nthread_groups == 0);
-      int nthreads_per_group = nthreads/nthread_groups;
-      int gid = tid/nthreads_per_group;
-      int tid_in_group = tid%nthreads_per_group;
-
-      int n_per_group = (this->num_ + nthread_groups - 1)/nthread_groups;
-      int n_begin = std::min(n_per_group*gid, this->num_);
-      int n_end = std::min(n_begin + n_per_group, this->num_);
+      int n_begin, n_end;
+      cpu::OpenMpManager::getBatchThreadPartition(&n_begin, &n_end, this->num_);
 
       float* padded_square_data = padded_square_ + tid * (this->num_output_ + size_ - 1) * width_;
       for (int j = 0; j < pre_pad_ * width_; ++j) {
@@ -373,13 +360,11 @@ void ConvolutionReLUPoolLRNLayer<float>::Forward_cpu(const vector<Blob<float>*>&
             // The main loop
             int len = conv_top_[i]->offset(0, 1);
 
-            int c_per_thread = (this->num_output_ + nthreads_per_group - 1)/nthreads_per_group;
-            int cbegin = std::min(c_per_thread*tid_in_group, this->num_output_);
-            int cend = std::min(cbegin + c_per_thread, this->num_output_);
+            int cbegin, cend;
+            cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+                &cbegin, &cend, this->num_output_, this->num_);
 
-            if (nthread_groups != nthreads) {
-              barriers[gid]->wait(tid_in_group);
-            }
+            cpu::OpenMpManager::barrierGroup(this->num_);
 
             for (int c = cbegin; c < cend; ++c) {
               // compute offset
@@ -588,11 +573,11 @@ void ConvolutionReLUPoolLRNLayer<float>::Forward_cpu(const vector<Blob<float>*>&
 //          temp_mask_v = _mm256_load_si256((__m256i *)temp_mask2);
 //        }
 
-        int i_per_thread = (pooled_height_ + nthreads_per_group - 1)/nthreads_per_group;
-        int ibegin = std::min(i_per_thread*tid_in_group, pooled_height_);
-        int iend = std::min(ibegin + i_per_thread, pooled_height_);
+        int ibegin, iend;
+        cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+            &ibegin, &iend, pooled_height_, this->num_);
 
-        if (nthread_groups != nthreads) barriers[gid]->wait(tid_in_group);
+        cpu::OpenMpManager::barrierGroup(this->num_);
 
         for (int i = ibegin; i < iend; ++i) {
           // compute the padded square
@@ -674,13 +659,10 @@ void ConvolutionReLUPoolLRNLayer<float>::Forward_cpu(const vector<Blob<float>*>&
 //          }
         }
 
-        i_per_thread = (this->num_output_ * pooled_height_ * pooled_width_ / 8 + nthreads_per_group - 1)/nthreads_per_group;
-        ibegin = std::min(i_per_thread*tid_in_group, this->num_output_ * pooled_height_ * pooled_width_ / 8);
-        iend = std::min(ibegin + i_per_thread, this->num_output_ * pooled_height_ * pooled_width_ / 8);
+        cpu::OpenMpManager::getSimpleGroupedThreadPartition(
+            &ibegin, &iend, this->num_output_*pooled_height_*pooled_width_/8, this->num_);
 
-        if (nthread_groups != nthreads) {
-          barriers[gid]->wait(tid_in_group);
-        }
+        cpu::OpenMpManager::barrierGroup(this->num_);
 
 #ifdef __AVX2__
         for (int i = ibegin*8; i < iend*8; i += 8) {

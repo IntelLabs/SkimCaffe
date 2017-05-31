@@ -480,12 +480,7 @@ inline Dtype Layer<Dtype>::Forward(const vector<Blob<Dtype>*>& bottom,
         const int count = top[top_id]->count();
         const Dtype* data = top[top_id]->cpu_data();
         const Dtype* loss_weights = top[top_id]->cpu_diff();
-#ifdef _OPENMP
-#pragma omp parallel for reduction(+:loss)
-#endif
-        for (int i = 0; i < count; ++i) {
-          loss += data[i]*loss_weights[i];
-        }
+        loss += caffe_cpu_dot(count, data, loss_weights);
       }
     }
     break;

@@ -58,7 +58,7 @@ void GlobalInit(int* pargc, char*** pargv) {
 
 Caffe::Caffe()
     : random_generator_(), mode_(Caffe::CPU),
-      solver_count_(1), root_solver_(true) { }
+      solver_count_(1), root_solver_(true), iter_size_(1) { }
 
 Caffe::~Caffe() { }
 
@@ -111,7 +111,7 @@ void* Caffe::RNG::generator() {
 
 Caffe::Caffe()
     : cublas_handle_(NULL), cusparse_handle_(NULL), cusparse_matdescr_(NULL), curand_generator_(NULL), random_generator_(),
-    mode_(Caffe::CPU), solver_count_(1), root_solver_(true) {
+    mode_(Caffe::CPU), solver_count_(1), root_solver_(true), iter_size_(1) {
   // Try to create a cublas handler, and report an error if failed (but we will
   // keep the program running as one might just want to run CPU code).
   if (cublasCreate(&cublas_handle_) != CUBLAS_STATUS_SUCCESS) {
@@ -136,12 +136,19 @@ Caffe::Caffe()
 }
 
 Caffe::~Caffe() {
+#ifdef _OPENMP
+  if (0 == omp_get_thread_num()) { 
+#endif
   if (cublas_handle_) CUBLAS_CHECK(cublasDestroy(cublas_handle_));
   if (cusparse_handle_) CUSPARSE_CHECK(cusparseDestroy(cusparse_handle_));
   if (cusparse_matdescr_) CUSPARSE_CHECK(cusparseDestroyMatDescr(cusparse_matdescr_));
   if (curand_generator_) {
     CURAND_CHECK(curandDestroyGenerator(curand_generator_));
   }
+#ifdef _OPENMP
+  }
+#endif
+
 }
 
 void Caffe::set_random_seed(const unsigned int seed) {

@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2015-2016, Intel Corporation                                **
+** Copyright (c) 2015-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -34,7 +34,7 @@
 #include "generator_x86_instructions.h"
 #include "generator_common.h"
 
-#include <libxsmm_cpuid.h>
+#include <libxsmm_intrinsics_x86.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -139,7 +139,6 @@ void libxsmm_generator_convolution_weight_update_avx512_kernel( libxsmm_generate
 
 #ifdef UNROLL_REGISTER_BLOCK
   /* initilize OFW and OFH unrolling */
-
   if (i_conv_desc->kw == 1 && i_conv_desc->kh == 1) {
   if (i_conv_desc->ofh_unroll != 0) {
     l_ofh_trips = i_conv_desc->ofh / i_conv_desc->ofh_rb;

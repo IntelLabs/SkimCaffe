@@ -331,7 +331,11 @@ else
   ifeq ($(KNL), 1)
     CXXFLAGS += -xMIC-AVX512
   else
-    CXXFLAGS += -xHost
+    ifeq ($(SKX), 1)
+      CXXFLAGS += -xCORE-AVX512
+    else
+      CXXFLAGS += -xHost
+    endif
   endif
 endif
 
@@ -354,6 +358,8 @@ ifeq ($(ALLOW_LMDB_NOLOCK), 1)
 	COMMON_FLAGS += -DALLOW_LMDB_NOLOCK
 endif
 endif
+
+COMMON_FLAGS += -DMKL2017_SUPPORTED
 
 # CPU-only configuration
 ifeq ($(CPU_ONLY), 1)
@@ -475,6 +481,8 @@ libxsmm:
 		make OMP=1 DBG=1; \
 	elif [ -n KNL ] && [ "$(KNL)" == "1" ]; then \
 		make OMP=1 OPT=3 AVX=3; \
+	elif [ -n SKX ] && [ "$(SKX)" == "1" ]; then \
+		make OMP=1 OPT=3 AVX=3 MIC=0; \
 	elif [ -n SSE ] && [ "$(SSE)" == "1" ]; then \
 		make OMP=1 OPT=3; \
 	else \

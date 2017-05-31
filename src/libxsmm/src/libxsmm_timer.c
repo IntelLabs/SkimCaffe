@@ -1,5 +1,5 @@
 /******************************************************************************
-** Copyright (c) 2009-2016, Intel Corporation                                **
+** Copyright (c) 2009-2017, Intel Corporation                                **
 ** All rights reserved.                                                      **
 **                                                                           **
 ** Redistribution and use in source and binary forms, with or without        **
@@ -73,7 +73,8 @@ LIBXSMM_API_DEFINITION unsigned long long libxsmm_timer_tick(void)
 }
 
 
-LIBXSMM_API_DEFINITION /*LIBXSMM_INTRINSICS*/ unsigned long long libxsmm_timer_xtick(void)
+LIBXSMM_API_DEFINITION LIBXSMM_INTRINSICS(LIBXSMM_X86_GENERIC)
+unsigned long long libxsmm_timer_xtick(void)
 {
   unsigned long long result;
 #if defined(LIBXSMM_TIMER_RDTSC)

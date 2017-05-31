@@ -17,11 +17,7 @@ namespace caffe {
 template<typename Dtype>
 InnerProductLayer<Dtype>::InnerProductLayer(const LayerParameter& param) :
     Layer<Dtype>(param),
-    bottom_values_(NULL), bottom_j_(NULL), bottom_i_(NULL),
-    top_values_(NULL), top_j_(NULL), top_i_(NULL),
-    weight_values_(NULL), weight_j_(NULL), weight_i_(NULL),
-    bottom_transposed_(NULL),
-    weight_values_blocked_(NULL), weight_j_blocked_(NULL), weight_i_blocked_(NULL)
+    bottom_transposed_(NULL)
 {
 
 }
@@ -29,30 +25,28 @@ InnerProductLayer<Dtype>::InnerProductLayer(const LayerParameter& param) :
 template<typename Dtype>
 InnerProductLayer<Dtype>::~InnerProductLayer()
 {
-  free(bottom_values_);
-  free(bottom_j_);
-  free(bottom_i_);
   free(bottom_transposed_);
 
-  free(top_values_);
-  free(top_j_);
-  free(top_i_);
+	const LayerParameter& layerparam = this->layer_param();
+	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
-  free(weight_values_);
-  free(weight_j_);
-  free(weight_i_);
-
-  free(weight_values_blocked_);
-  free(weight_j_blocked_);
-  free(weight_i_blocked_);
+  if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+    if (1 == M_) {
+      libxsmm_spmv_destroy(&libxsmm_spmv_handle_);
+    }
+    else
+#endif
+    {
+      libxsmm_spmdm_destroy(&libxsmm_spmdm_handle_);
+    }
+  }
 }
 
 template<>
 void InnerProductLayer<double>::WeightAlign(){
   NOT_IMPLEMENTED;
 }
-
-static int col_block_size = 128;
 
 template<>
 void InnerProductLayer<float>::WeightAlign(){
@@ -63,34 +57,62 @@ void InnerProductLayer<float>::WeightAlign(){
 	  this->blobs_[0]->WriteToNistMMIOSparse(layerparam.name()+".mtx");
 	}
 
-	posix_memalign((void **)&weight_i_, 4096, sizeof(int)*(std::max(K_, N_) + 1));
-	posix_memalign((void **)&weight_j_, 4096, sizeof(int)*K_*N_);
-	posix_memalign((void **)&weight_values_, 4096, sizeof(float)*K_*N_);
-
 	caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode) {
-    if (!transpose_) {
-      int ncolblocks = K_/col_block_size;
-      posix_memalign((void **)&weight_i_blocked_, 4096, sizeof(int)*(N_*ncolblocks + 1));
-      posix_memalign((void **)&weight_j_blocked_, 4096, sizeof(int)*K_*N_);
-      posix_memalign((void **)&weight_values_blocked_, 4096, sizeof(float)*K_*N_);
+    if (!bias_term_) LOG(FATAL) << "SPMDM mode only works with bias term";
 
-      weight_i_blocked_[0] = 0;
-      int nnz = 0;
-      for (int cb = 0; cb < ncolblocks; ++cb) {
-        for (int i = 0; i < N_; ++i) {
-          for (int j = cb*col_block_size; j < (cb + 1)*col_block_size; ++j) {
-            float v = this->blobs_[0]->mutable_cpu_data()[i*K_ + j];
-            if (v != 0) {
-              weight_j_blocked_[nnz] = M_*j;
-              weight_values_blocked_[nnz] = v;
-              ++nnz;
-            }
-          }
-          weight_i_blocked_[cb*N_ + i + 1] = nnz;
+    if (!transpose_) {
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+      if (1 == M_) {
+        libxsmm_spmv_init(N_, K_, omp_get_max_threads(), &libxsmm_spmv_handle_, &libxsmm_csr_weight_);
+
+        int nCreateSparseSliceBlocks = libxsmm_spmv_handle_.mb*libxsmm_spmv_handle_.kb;
+
+#pragma omp parallel for
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          libxsmm_spmv_createSparseSlice_fp32_thread(
+              &libxsmm_spmv_handle_, 'N' /*transA*/,
+              this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
+        }
+
+        nnz_weight_ = 0;
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          int kb = i/libxsmm_spmv_handle_.mb;
+          int mb = i%libxsmm_spmv_handle_.mb;
+          int nrows = std::min((mb + 1)*libxsmm_spmv_handle_.bm, libxsmm_spmv_handle_.m) - mb*libxsmm_spmv_handle_.bm;
+          nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
         }
       }
+      else
+#endif
+      {
+        libxsmm_spmdm_init(N_, M_, K_, omp_get_max_threads(), &libxsmm_spmdm_handle_, &libxsmm_csr_weight_);
+
+        int nCreateSparseSliceBlocks = libxsmm_spmdm_get_num_createSparseSlice_blocks(&libxsmm_spmdm_handle_);
+#pragma omp parallel for
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          libxsmm_spmdm_createSparseSlice_fp32_thread(
+              &libxsmm_spmdm_handle_, 'N' /*transA*/,
+              this->blobs_[0]->cpu_data(), libxsmm_csr_weight_, i, omp_get_thread_num(), omp_get_num_threads());
+        }
+
+        nnz_weight_ = 0;
+        for (int i = 0; i < nCreateSparseSliceBlocks; ++i) {
+          int kb = i/libxsmm_spmdm_handle_.mb;
+          int mb = i%libxsmm_spmdm_handle_.mb;
+          int nrows = std::min((mb + 1)*libxsmm_spmdm_handle_.bm, libxsmm_spmdm_handle_.m) - mb*libxsmm_spmdm_handle_.bm;
+          nnz_weight_ += libxsmm_csr_weight_[i].rowidx[nrows];
+        }
+      }
+
+#ifndef NDEBUG
+      int nnz_ref = 0;
+      for (int i = 0; i < N_*K_; ++i) {
+        if (this->blobs_[0]->cpu_data()[i] != 0.) ++nnz_ref;
+      }
+      assert(nnz_weight_ == nnz_ref);
+#endif
     }
     else {
       LOG(WARNING) << "SPMDM mode is not supported for transposed inner product. Falling back to GEMM mode";
@@ -99,14 +121,6 @@ void InnerProductLayer<float>::WeightAlign(){
   else if (caffe::InnerProductParameter_GemmMode_SPGEMM == gemm_mode) {
     LOG(FATAL) << "SPGEMM mode is not supported yet";
   }
-
-  posix_memalign((void **)&bottom_i_, 4096, sizeof(int)*(std::max(M_, K_) + 1));
-  posix_memalign((void **)&bottom_j_, 4096, sizeof(int)*M_*K_);
-  posix_memalign((void **)&bottom_values_, 4096, sizeof(float)*M_*K_);
-
-  posix_memalign((void **)&top_i_, 4096, sizeof(int)*(std::max(M_, N_) + 1));
-  posix_memalign((void **)&top_j_, 4096, sizeof(int)*M_*N_);
-  posix_memalign((void **)&top_values_, 4096, sizeof(float)*M_*N_);
 
   posix_memalign((void **)&bottom_transposed_, 4096, sizeof(int)*M_*std::max(K_, N_));
 
@@ -221,25 +235,86 @@ void InnerProductLayer<float>::Forward_cpu(const vector<Blob<float>*>& bottom,
   caffe::InnerProductParameter_GemmMode gemm_mode = layerparam.inner_product_param().gemm_mode();
 
   if (caffe::InnerProductParameter_GemmMode_SPMDM == gemm_mode && !transpose_) {
-    if (layerparam.inner_product_param().spmdm_transpose_in()) {
-      mkl_somatcopy('R', 'T', M_, K_, 1, bottom_data, K_, bottom_transposed_, M_);
+
+    double t = omp_get_wtime();
+
+#ifdef OPTIMIZE_FOR_UNIT_BATCH
+    if (1 == M_) {
+#pragma omp parallel
+      {
+        float alpha = 1, beta = 0;
+        libxsmm_spmv_compute_fp32_thread(
+            &libxsmm_spmv_handle_, 'N' /*transA*/,
+            &alpha, libxsmm_csr_weight_,
+            bottom_data,
+            &beta, top_data,
+            omp_get_thread_num(), omp_get_thread_num(), omp_get_num_threads());
+      }
+    }
+    else
+#endif
+    {
+      int num_compute_blocks = libxsmm_spmdm_get_num_compute_blocks(&libxsmm_spmdm_handle_);
+#pragma omp parallel for
+      for (int i = 0; i < num_compute_blocks; ++i) {
+        float alpha = 1, beta = 0;
+        libxsmm_spmdm_compute_fp32_thread(
+            &libxsmm_spmdm_handle_, 'N' /*transA*/, layerparam.inner_product_param().spmdm_transpose_in() ? 'T' : 'N' /*transB*/,
+            &alpha, libxsmm_csr_weight_,
+            bottom_data,
+            layerparam.inner_product_param().spmdm_transpose_out() ? 'T' : 'N' /*transC*/, &beta, top_data,
+            i, omp_get_thread_num(), omp_get_num_threads());
+      }
     }
 
-    int ncolblocks = K_/col_block_size;
-    double t = omp_get_wtime();
-    csrmm(
-        weight_values_blocked_, weight_j_blocked_, weight_i_blocked_,
-        layerparam.inner_product_param().spmdm_transpose_in() ? bottom_transposed_ : bottom_data,
-        top_data,
-        N_, M_, K_,
-        this->blobs_[1]->cpu_data(),
-        col_block_size);
     t = omp_get_wtime() - t;
-    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*weight_i_blocked_[ncolblocks*N_]*M_/t/1e9;
+    LOG(INFO) << "csrmm takes " << t << " effective GF/s " << 2.*K_*N_*M_/t/1e9 << " real GF/s " << 2.*nnz_weight_*M_/t/1e9;
 
+#if 0 //ndef NDEBUG
     if (layerparam.inner_product_param().spmdm_transpose_out()) {
-      memcpy(bottom_transposed_, top_data, sizeof(float)*M_*N_);
-      mkl_somatcopy('R', 'T', N_, M_, 1, bottom_transposed_, M_, top_data, N_);
+      caffe_cpu_gemm<float>(layerparam.inner_product_param().spmdm_transpose_in() ? CblasNoTrans : CblasTrans, transpose_ ? CblasNoTrans : CblasTrans,
+          M_, N_, K_, (float)1.,
+          bottom_data, weight, (float)0., bottom_transposed_);
+    }
+    else {
+      caffe_cpu_gemm<float>(transpose_ ? CblasTrans : CblasNoTrans, layerparam.inner_product_param().spmdm_transpose_in() ? CblasTrans : CblasNoTrans,
+          N_, M_, K_, (float)1.,
+          weight, bottom_data, (float)0., bottom_transposed_);
+    }
+
+//#define DBG_SPMDM
+#ifdef DBG_SPMDM
+#define ROW_TO_DEBUG (0)
+#define COL_TO_DEBUG (0)
+    for (int k = 0; k < K_; ++k) {
+      float w = weight[COL_TO_DEBUG*K_ + k];
+      if (w != 0) {
+        printf("%g*%d:%g + ", w, k, bottom_data[ROW_TO_DEBUG*K_ + k]);
+      }
+    }
+    printf("= %g\n", bottom_transposed_[ROW_TO_DEBUG*N_ + COL_TO_DEBUG]);
+    printf("%g %g\n", top_data[ROW_TO_DEBUG*N_ + COL_TO_DEBUG], top_data[COL_TO_DEBUG*M_ + ROW_TO_DEBUG]);
+#undef ROW_TO_DEBUG
+#undef COL_TO_DEBUG
+#undef DBG_SPMDM
+#endif
+
+    for (int i = 0; i < M_; ++i) {
+      for (int j = 0; j < N_; ++j) {
+        float expected = bottom_transposed_[i*N_ + j];
+        float actual = top_data[i*N_ + j];
+        if (fabs(actual - expected)/fabs(expected) > 1e-1 && fabs(expected) > 1e-4) {
+          LOG(FATAL) << "(" << i << ", " << j << ") " << expected << " expected " << actual << " actual";
+        }
+      }
+    }
+#endif // !NDEBUG
+
+    if (bias_term_) {
+      // JSP: common path for AlexNet
+      caffe_cpu_gemm<float>(CblasNoTrans, CblasNoTrans, M_, N_, 1, (float)1.,
+          bias_multiplier_.cpu_data(),
+          this->blobs_[1]->cpu_data(), (float)1., top_data);
     }
 
     std::string name(this->layer_param_.name());
