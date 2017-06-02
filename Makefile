@@ -15,13 +15,16 @@ ifeq ($(DEBUG_BUILD_DIR),)
 	DEBUG_BUILD_DIR := .$(BUILD_DIR)_debug
 endif
 
-DEBUG ?= 0
-ifeq ($(DEBUG), 1)
+DBG ?= 0
+AVX = 2 # for libxsmm, default AVX2
+ifeq ($(DBG), 1)
 	BUILD_DIR := $(DEBUG_BUILD_DIR)
 	OTHER_BUILD_DIR := $(RELEASE_BUILD_DIR)
+	OPT=0 # for libxsmm
 else
 	BUILD_DIR := $(RELEASE_BUILD_DIR)
 	OTHER_BUILD_DIR := $(DEBUG_BUILD_DIR)
+	OPT=3 # for libxsmm
 endif
 
 # All of the directories containing code.
@@ -318,24 +321,24 @@ else
 endif
 
 # Debugging
-ifeq ($(DEBUG), 1)
+ifeq ($(DBG), 1)
 	COMMON_FLAGS += -DDEBUG -g -O0
 	NVCCFLAGS += -G
 else
 	COMMON_FLAGS += -DNDEBUG -O3
 endif
 
-ifeq ($(SSE), 1)
-    CXXFLAGS += -xSSE4.2
-else
-  ifeq ($(KNL), 1)
+ifeq ($(AVX), 3)
+  ifeq ($(MIC), 1)
     CXXFLAGS += -xMIC-AVX512
   else
-    ifeq ($(SKX), 1)
-      CXXFLAGS += -xCORE-AVX512
-    else
-      CXXFLAGS += -xHost
-    endif
+    CXXFLAGS += -xCORE-AVX512
+  endif
+else
+  ifeq ($(AVX), 2)
+    CXXFLAGS += -xCORE-AVX2
+  else
+    CXXFLAGS += -xHost
   endif
 endif
 
@@ -475,28 +478,10 @@ endif
 all: lib tools examples
 
 libxsmm:
-	@ \
-	cd src/libxsmm; \
-	if [ -n DEBUG ] && [ "$(DEBUG)" == "1" ]; then \
-		make OMP=1 DBG=1; \
-	elif [ -n KNL ] && [ "$(KNL)" == "1" ]; then \
-		make OMP=1 OPT=3 AVX=3; \
-	elif [ -n SKX ] && [ "$(SKX)" == "1" ]; then \
-		make OMP=1 OPT=3 AVX=3 MIC=0; \
-	elif [ -n SSE ] && [ "$(SSE)" == "1" ]; then \
-		make OMP=1 OPT=3; \
-	else \
-		make OMP=1 OPT=3 AVX=2; \
-	fi
+	$(MAKE) -C src/libxsmm AVX=$(AVX) OPT=$(OPT) DBG=$(DBG)
 
 SpMP:
-	@ \
-	cd src/SpMP; \
-	if [ -n DEBUG ] && [ "$(DEBUG)" == "1" ]; then \
-		make DBG=1; \
-	else \
-		make; \
-	fi
+	$(MAKE) -C src/SpMP DBG=$(DBG)
 
 lib: $(STATIC_NAME) $(DYNAMIC_NAME)
 
@@ -697,8 +682,8 @@ clean:
 	@- $(RM) -rf $(DISTRIBUTE_DIR)
 	@- $(RM) $(PY$(PROJECT)_SO)
 	@- $(RM) $(MAT$(PROJECT)_SO)
-	cd src/libxsmm; make clean
-	cd src/SpMP; make clean
+	$(MAKE) -C src/libxsmm clean
+	$(MAKE) -C src/SpMP clean
 
 supercleanfiles:
 	$(eval SUPERCLEAN_FILES := $(strip \
