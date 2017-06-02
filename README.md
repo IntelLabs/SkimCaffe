@@ -110,20 +110,14 @@ cp Makefile.config.example Makefile.config
 # Then, change Makefile.config if needed. For example, you need to add boost include path to INCLUDE_DIRS and boost library path to LIBRARY_DIRS
 ```
 
-3) Compile libxsmm:
-
-```
-make libxsmm
-```
-
-4) Build Caffe as usual
+3) Build Caffe as usual
 
 Additional options:
-KNL=1 # compiles for Knights Landing
-SSE=1 # compiles for SSE
-If neither KNL nor SSE is defined, by default we compile for AVX2 (Haswell or later)
+AVX=3 # compile for Skylake
+AVX=3 MIC=1 # compile for Knights Landing
+AVX=2 # compiles for AVX2
 
-5) Test:
+4) Test:
 
 ```
 # Test sparse CaffeNet
