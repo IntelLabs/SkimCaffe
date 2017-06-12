@@ -135,34 +135,6 @@ void print_matrix(std::ostringstream& str, const Dtype *A, int m, int n)
   return print_matrix(str, A, m, n, n);
 }
 
-template <typename Dtype>
-void potrf(const char *uplo, const int *n, Dtype *a, const int *lda, int *info);
-
-template<>
-void potrf(const char *uplo, const int *n, float *a, const int *lda, int *info){
-  spotrf(uplo, n, a, lda, info);
-}
-
-template<>
-void potrf(const char *uplo, const int *n, double *a, const int *lda, int *info){
-  dpotrf(uplo, n, a, lda, info);
-}
-
-template <typename Dtype>
-void potrs(const char *uplo, const int *n, const int *nrhs, const Dtype *a, const int *lda, Dtype *b, const int *ldb, int *info);
-
-template<>
-void potrs(const char *uplo, const int *n, const int *nrhs, const float *a, const int *lda, float *b, const int *ldb, int *info)
-{
-  spotrs(uplo, n, nrhs, a, lda, b, ldb, info);
-}
-
-template<>
-void potrs(const char *uplo, const int *n, const int *nrhs, const double *a, const int *lda, double *b, const int *ldb, int *info)
-{
-  dpotrs(uplo, n, nrhs, a, lda, b, ldb, info);
-}
-
 template<int K>
 struct WinogradParameters
 {
