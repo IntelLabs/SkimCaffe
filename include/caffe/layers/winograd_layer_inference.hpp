@@ -30,7 +30,7 @@ namespace caffe {
  *   the output channel N' columns of the output matrix.
  */
 template <typename Dtype>
-class WinogradLayer : public BaseConvolutionLayer<Dtype> {
+class WinogradLayerInference : public BaseConvolutionLayer<Dtype> {
  public:
   /**
    * @param param provides ConvolutionParameter convolution_param,
@@ -63,7 +63,7 @@ class WinogradLayer : public BaseConvolutionLayer<Dtype> {
    *  - engine: convolution has CAFFE (matrix multiplication) and CUDNN (library
    *    kernels + stream parallelism) engines.
    */
-  explicit WinogradLayer(const LayerParameter& param)
+  explicit WinogradLayerInference(const LayerParameter& param)
       : BaseConvolutionLayer<Dtype>(param) {}
 
   virtual inline const char* type() const { return "Winograd"; }
